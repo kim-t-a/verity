@@ -13,7 +13,7 @@ Living progress log. Updated at the end of every stage. Durable rules live in
 |---|---|---|
 | 0 | Inspect and plan | ✅ **complete** |
 | 1a | Corpus discovery and format detection | ✅ **complete** |
-| 1b | Document readers (pdf, docx, xlsx, csv, text, code) | ⬜ not started |
+| 1b | Document readers (pdf, docx, xlsx, csv, text, code) | ✅ **complete** |
 | 1c | Image reader interface + normalised chunks | ⬜ not started |
 | 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ⬜ not started |
 | 3 | Keyword retrieval | ⬜ not started |
@@ -250,3 +250,210 @@ in either location.
 **and** tables), XLSX (all worksheets), CSV, TXT/LOG and Python source, each attaching
 provenance (page / sheet / row / line) to the text it extracts. The PDF reader must
 detect `/Encrypt` and report the file as unreadable rather than attempting to open it.
+
+---
+
+## Stage 1b — Text document readers ✅
+
+**Goal:** turn each discoverable file into a sequence of `TextSpan`s that carry
+their own provenance, so that a later stage can both *find* a value and *prove*
+which file it came from. Nothing here does retrieval or answering; this stage
+only converts bytes into located text.
+
+### Files created
+
+| File | Responsibility |
+|---|---|
+| `starter/app/ingestion/readers/__init__.py` | Dispatcher: `reader_for(media_type)`, `read_file(discovered)`; the never-raises boundary |
+| `starter/app/ingestion/readers/source.py` | Bounded reads, encoding fallback, the not-text guard |
+| `starter/app/ingestion/readers/text.py` | `.txt` / `.log` / source: one span per non-blank line |
+| `starter/app/ingestion/readers/tabular.py` | Shared table rendering for CSV, XLSX and DOCX tables |
+| `starter/app/ingestion/readers/delimited.py` | CSV with delimiter sniffing |
+| `starter/app/ingestion/readers/xmlpart.py` | Safe OOXML part loading (DOCTYPE/ENTITY refusal, size caps) |
+| `starter/app/ingestion/readers/docx.py` | Paragraphs **and** tables from `word/document.xml` |
+| `starter/app/ingestion/readers/xlsx.py` | Every worksheet; both string storage methods |
+| `starter/app/ingestion/readers/pdf.py` | `/Encrypt` detection first, then text extraction with ToUnicode CMaps |
+| `tests/document_fixtures.py` | Builders for synthetic DOCX/XLSX/PDF |
+| `tests/test_readers_common.py`, `test_readers_text.py`, `test_readers_tabular.py`, `test_readers_docx.py`, `test_readers_pdf.py`, `test_readers_real_corpus.py` | 113 new tests |
+
+### Files modified
+
+| File | Change |
+|---|---|
+| `starter/app/models.py` | Added `ReadStatus`, `TextSpan`, `ReadResult` |
+| `starter/app/config.py` | Added `MAX_TEXT_BYTES`, `MAX_ZIP_MEMBER_BYTES`, `TEXT_ENCODINGS`, `UNREMARKABLE_ENCODINGS`, `MAX_CONTROL_CHARACTER_RATIO`, `CELL_SEPARATOR` |
+| `tests/conftest.py` | Added the `build_corpus` fixture (real walker over `tmp_path`) |
+
+### Key design decisions
+
+1. **A reader never raises; failure is a value.** Every reader returns a
+   `ReadResult` whose `status` is `ok`, `empty`, `encrypted`, `unreadable` or
+   `unsupported`. `read_file` still wraps each call in `except Exception` as a
+   backstop. This is rule 9 ("never let one bad file abort the corpus walk")
+   expressed at the type level rather than as a convention — the caller cannot
+   forget to handle a failure, because the failure *is* the return value.
+
+2. **`ok` and `empty` are deliberately distinct.** A file that opened and
+   parsed but held no text is `empty`; a file whose reader crashed is
+   `unreadable`. Collapsing them would make a reader bug look identical to a
+   genuinely blank document, and the corpus hazards include both.
+
+3. **`/Encrypt` is checked before any extraction.** A naive extractor on the
+   sample's AES-256 PDF returns a *silently empty page* — no exception, no
+   text. That is the worst possible failure (rule 11: refuse only when evidence
+   genuinely fails; here the evidence is present but locked). The reader
+   therefore tests for `/Encrypt` first and reports `encrypted`, so question 10's
+   refusal rests on a positively-identified cause.
+
+4. **Provenance is structural, not a token window.** One span per row, line or
+   paragraph, each carrying `location` (`page 3 line 7`, `sheet 'RMA Parts' row 2`,
+   `line 42`). Chunking by a fixed token window would cut rows in half and
+   detach a value from the label that gives it meaning.
+
+5. **Table rows are rendered with their column names attached**
+   (`fixed_in=4.3.2`). A query asking what release *fixed* a bug has the word
+   "fixed" only in the header; a row rendered as bare values leaves that word
+   with nothing to match. **Labels are added; cell values are never rewritten,
+   substituted or paraphrased.**
+
+6. **A first row is only a header if it is at least 3 columns wide and fully
+   populated.** A two-column table is far more likely key/value — reading
+   `Maximum junction temperature | 94 C` as a header would render the next row
+   as `Maximum junction temperature=Board power`, inventing a relationship
+   between two unrelated measurements.
+
+7. **Sparse spreadsheet cells are filled to their declared column.** A row
+   storing only cell `C2` still means column C; reading cells in the order they
+   appear would place that value under column A — a value silently attributed
+   to the wrong label, which is worse than a miss.
+
+8. **Both XLSX string storage methods are supported.** The sample corpus uses
+   inline strings and has no `sharedStrings.xml`; Excel-authored workbooks
+   normally use the shared table. A reader supporting one only returns an empty
+   column for the other *without erroring*.
+
+9. **`utf-8-sig` leads the encoding list, not plain `utf-8`.** A BOM is valid
+   UTF-8, so plain `utf-8` succeeds on a BOM'd file and leaves U+FEFF glued to
+   the first token on line 1 — which is exactly where a part number or a value
+   lives. `utf-8-sig` strips a mark when present and behaves identically when
+   not, so it dominates.
+
+10. **OOXML parsing refuses DOCTYPE and ENTITY.** `xmlpart` rejects a document
+    type definition in the first 4 KiB and checks each member's *declared*
+    uncompressed size before decompressing, defeating billion-laughs and
+    zip-bomb shapes. The corpus is untrusted input.
+
+11. **`looks_like_text` rejects binaries that happen to be named `.txt`.**
+    Indexing mojibake puts noise into retrieval that no query can match. The
+    threshold is a control-character *ratio* (`10%`), not a single-byte check,
+    because real text files contain the occasional stray control byte.
+
+### Commands actually run
+
+```bash
+# Full suite, native ext4 venv, isolated interpreter
+/home/alfin/venvs/mc3/bin/python -I -m pytest tests/ -q
+
+# Reader results over the real sample corpus
+/home/alfin/venvs/mc3/bin/python -I -c "..."   # walker.discover -> read_file, per file
+
+# Isolate the PDF operator scan on a synthetic document
+/home/alfin/venvs/mc3/bin/python -I -c "..."   # dump _CONTENT_OPERATORS matches
+```
+
+### Test results
+
+```
+165 passed in 11.77s
+```
+
+The last run includes 113 reader tests. Before the fixes below the suite stood
+at 5 failed / 160 passed; both remaining causes were diagnosed and resolved
+rather than papered over.
+
+**Real sample corpus, every file read through the real walker:**
+
+| Status | Spans | Chars | File |
+|---|---:|---:|---|
+| ok | 11 | 508 | `engineering/ingest_service.py` |
+| ok | 6 | 380 | `engineering/meridian_release_notes.txt` |
+| ok | 7 | 728 | `logs/prod_inference_2026-09-02.log` |
+| ok | 8 | 562 | `planning/roadmap_fy27.docx` |
+| unsupported | 0 | 0 | `specs/backplane_pinout.png` |
+| ok | 8 | 321 | `specs/tq40_datasheet_r1_WITHDRAWN.pdf` |
+| ok | 13 | 518 | `specs/tq40_datasheet_r2.pdf` |
+| unsupported | 0 | 0 | `support/asset_label.jpg` |
+| ok | 6 | 743 | `support/bug_database.csv` |
+| ok | 6 | 672 | `support/rma_parts.xlsx` |
+| ok | 2 | 108 | `vendor/internal_audit.txt` |
+| encrypted | 0 | 0 | `vendor/supplier_agreement_ENCRYPTED.pdf` |
+| unsupported | 0 | 0 | `vendor/telemetry_capture.dat` |
+
+67 spans, no `unreadable` — every reader succeeded on the input it claimed.
+
+### Two real bugs the synthetic fixtures caught
+
+Both were invisible in the sample corpus. This is the argument for building
+documents in the tests rather than testing only against the kit's files.
+
+**1. A BOM survived decoding (real bug, silent).** `TEXT_ENCODINGS` originally
+led with `utf-8`. A BOM is valid UTF-8, so the plain codec succeeded and left
+U+FEFF attached to the first token of line 1. Fixed by leading with
+`utf-8-sig`. The corpus could not have shown this — no sample file has a BOM.
+
+**2. The PDF `Tj` matcher never matched an ordinary string (real bug, latent).**
+
+```python
+# before -- requires a literal "(" at the start of every repetition
+rb"|(?P<single>(?:\([^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>)\s*Tj"
+# after
+rb"|(?P<single>\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]*>)\s*Tj"
+```
+
+The old form could only ever succeed by skipping the repetition entirely and
+matching a bare `)` before `Tj`, so a `(text) Tj` show operator produced **no
+text at all** — confirmed by tracing the scan, which yielded `single=b')'` and
+`lines: []` while the content stream and font map were both correct. Both
+sample-corpus PDFs use `TJ` *arrays*, so the `Tj` branch was never exercised
+and the corpus stayed green. `document_fixtures.pdf_bytes` emits `Tj`, which
+exposed it. With the fix the same trace yields
+`single=b'(Maximum junction temperature 94 C)'`, and the corpus PDFs (arrays)
+and the synthetic PDF (`Tj`) now cover both display operators.
+
+**One stale assertion, not a code bug:** `test_utf8_is_preferred` asserted
+`encoding == "utf-8"`, which the deliberate `utf-8-sig`-first ordering made
+false. The assertion was updated to pin the new behaviour; the property it
+tests — that UTF-8 is not mis-decoded as cp1252 — is unchanged and still
+asserted on the decoded text.
+
+### Decoy integrity verified over the corpus
+
+Extraction must not damage the near-misses that make the corpus hard:
+
+- withdrawn r1 retains `105`; r2 holds `94` and not `105`
+- release notes still lack `4.3.2` (the decoy file)
+- the bug database still carries `fixed_in=4.3.2`
+- the legacy `ORR-FAN-1990-A` row and the real `ORR-FAN-2214-B` row both survive
+- `DEFAULT_BATCH_TIMEOUT_S` reads `180`; the `60` appears only in the comment
+- the encrypted file's value does not leak from any readable file
+
+### Known limitations (accepted for now)
+
+- **DOCX:** headers, footers, footnotes, endnotes and comments are not read —
+  only `word/document.xml`. Revisit if the graded corpus puts values there.
+- **XLSX:** date-formatted cells are read as their underlying serial number, not
+  as a date; formulas are read as their cached result, not their expression.
+- **PDF:** form-field values, annotations and text emitted as vector outlines
+  (rather than as text operators) are not recovered. Scanned PDFs contain no
+  text operators at all and will come back `empty` — a vision-path candidate.
+- **PDF CMaps:** ToUnicode is honoured where present; the sample PDFs have none
+  and decode as Latin-1, which is correct for them but not in general.
+- **CSV:** a single-column file is rendered positionally, and ragged rows keep
+  extra cells under generated `column_N` names.
+
+### Next step
+
+**Stage 1c — image reader interface and the normalised chunker.** Define the
+interface images will satisfy (so rule 8 holds: the vision path reports itself
+as unavailable rather than inventing text), and convert `TextSpan`s into the
+retrieval chunks that Stage 2 will index.

@@ -125,3 +125,120 @@ class DiscoveryResult:
             f"{self.directory_count} director(y/ies), "
             f"{len(self.empty_directories)} empty"
         )
+
+
+class ReadStatus(StrEnum):
+    """How far a reader got with one file.
+
+    The distinction that matters most is ``OK`` versus ``EMPTY``. Both mean the
+    reader understood the format and finished without error, but only ``OK``
+    means it recovered text. A file that yielded nothing is not evidence for
+    anything, so it must never be cited -- and if the two cases were collapsed
+    into one, an empty read would look exactly like a successful one.
+    """
+
+    OK = "ok"
+    """Parsed and produced at least one non-blank span."""
+
+    EMPTY = "empty"
+    """Parsed cleanly, but the document genuinely holds no text."""
+
+    ENCRYPTED = "encrypted"
+    """Password-protected. We never attempt to crack it; the file is not a source."""
+
+    UNREADABLE = "unreadable"
+    """The format was recognised but the bytes could not be parsed."""
+
+    UNSUPPORTED = "unsupported"
+    """No reader exists for this media type (images, until the vision path is ready)."""
+
+
+@dataclass(frozen=True)
+class TextSpan:
+    """A contiguous run of text that came from one identifiable place.
+
+    Provenance is carried per span rather than per file because the answer has
+    to be traceable to a location: "the value is somewhere in this 40-page
+    datasheet" is not good enough to debug a wrong answer, and not good enough
+    to prove a citation was necessary.
+    """
+
+    text: str
+    """The recovered text, exactly as it appeared in the source."""
+
+    location: str
+    """Human-readable provenance -- ``page 3``, ``sheet 'RMA Parts' row 7``,
+    ``line 42``. Shown in diagnostics; never cited in the output JSON."""
+
+    ordinal: int
+    """Position within the file, for ordering. Only comparable within one file."""
+
+
+@dataclass(frozen=True)
+class ReadResult:
+    """Everything one reader recovered from one file.
+
+    Readers never raise. A failure is a value, so that a single malformed file
+    costs us that file and nothing else -- the same rule the walker follows.
+    """
+
+    rel_path: str
+    media_type: MediaType
+    status: ReadStatus
+    spans: tuple[TextSpan, ...] = ()
+    detail: str = ""
+    """Why the read failed, or what was unusual about it. Empty when routine."""
+
+    @property
+    def is_usable(self) -> bool:
+        """True only when this file may be treated as evidence.
+
+        ``Never cite a file we did not successfully read`` -- this property is
+        the single gate for that rule, so later stages ask it rather than
+        re-deriving the answer from ``status`` themselves.
+        """
+        return self.status is ReadStatus.OK
+
+    @property
+    def text(self) -> str:
+        """All recovered text, one span per line."""
+        return "\n".join(span.text for span in self.spans)
+
+    @property
+    def char_count(self) -> int:
+        return sum(len(span.text) for span in self.spans)
+
+    @classmethod
+    def failure(
+        cls,
+        rel_path: str,
+        media_type: MediaType,
+        status: ReadStatus,
+        detail: str,
+    ) -> "ReadResult":
+        return cls(rel_path=rel_path, media_type=media_type, status=status, detail=detail)
+
+    @classmethod
+    def of(
+        cls,
+        rel_path: str,
+        media_type: MediaType,
+        spans: list[TextSpan],
+        detail: str = "",
+    ) -> "ReadResult":
+        """Build a result, downgrading to ``EMPTY`` when nothing was recovered.
+
+        Centralised so no reader can accidentally report ``OK`` for a file it
+        got no text out of.
+        """
+        kept = tuple(span for span in spans if span.text.strip())
+        if not kept:
+            return cls.failure(
+                rel_path,
+                media_type,
+                ReadStatus.EMPTY,
+                detail or "the document contains no extractable text",
+            )
+        return cls(
+            rel_path=rel_path, media_type=media_type, status=ReadStatus.OK, spans=kept, detail=detail
+        )

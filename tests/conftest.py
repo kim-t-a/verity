@@ -11,9 +11,11 @@ Two jobs:
 
 from __future__ import annotations
 
+import itertools
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -29,6 +31,9 @@ CORPUS_DIR = REPO_ROOT / "mc3-corpus"
 # green while the container fails.
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
+
+from ingestion import walker  # noqa: E402 - must follow the sys.path edit above
+from models import DiscoveredFile  # noqa: E402
 
 
 @dataclass
@@ -124,3 +129,28 @@ def hazard_corpus(tmp_path: Path) -> HazardCorpus:
     # directory readable for anything that inspects it afterwards.
     if enforced:
         unreadable.chmod(0o600)
+
+
+@pytest.fixture
+def build_corpus(tmp_path: Path) -> Callable[[dict[str, bytes]], dict[str, DiscoveredFile]]:
+    """Return a helper that writes files and discovers them for real.
+
+    The files are put on disk and then handed to the actual walker, so reader
+    tests exercise the same path the pipeline uses -- a document is identified
+    by its bytes and its extension exactly as it would be during indexing,
+    rather than being constructed as a ``DiscoveredFile`` by hand and thereby
+    skipping the identification step.
+
+    Returns a mapping of corpus-relative path to discovered file.
+    """
+    counter = itertools.count()
+
+    def build(contents: dict[str, bytes | str]) -> dict[str, DiscoveredFile]:
+        root = tmp_path / f"corpus-{next(counter)}"
+        for rel_path, payload in contents.items():
+            target = root / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload if isinstance(payload, bytes) else payload.encode("utf-8"))
+        return {discovered.rel_path: discovered for discovered in walker.discover(root).files}
+
+    return build
