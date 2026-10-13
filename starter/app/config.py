@@ -93,3 +93,60 @@ MAX_CHUNK_CHARS = 2000
 #: and can never be quoted as an answer. Looking back a short distance for a
 #: space costs a little and usually avoids that.
 CHUNK_BREAK_LOOKBACK = 200
+
+# --- The index --------------------------------------------------------------
+
+#: Layout version of the persisted index.
+#:
+#: Bumped whenever the on-disk shape changes in a way an older reader would
+#: misinterpret. A reader that finds a version it does not know must refuse the
+#: index rather than guess: the alternative is answering questions from a
+#: misread chunk store, which produces confident wrong answers and cites files
+#: that do not support them. An index is cheap to rebuild -- ``--index`` is
+#: ungraded -- so refusing costs one startup pass and no score.
+INDEX_FORMAT_VERSION = 1
+
+#: The three files an index directory holds.
+#:
+#: Three files rather than one because they have different shapes and different
+#: failure modes. The manifest is small, human-readable and acts as the commit
+#: marker: it is written **last**, so an interrupted ``--index`` leaves a
+#: directory with no manifest, which reads as "no usable index" instead of as a
+#: half-built one. The chunks are one JSON object per line, so a damaged record
+#: costs one chunk rather than the whole file, and the store stays inspectable
+#: with ``head`` and ``grep`` during development. The vectors are a raw float
+#: buffer, because base64 in JSON would cost a third more bytes for no benefit.
+MANIFEST_FILENAME = "manifest.json"
+CHUNKS_FILENAME = "chunks.jsonl"
+VECTORS_FILENAME = "vectors.bin"
+
+# --- Embedding backends -----------------------------------------------------
+
+#: Which embedding backend to use. Read at both ``--index`` and ``--query``,
+#: and it must agree between them: an index built with one backend cannot be
+#: searched with another, because the vectors are not comparable.
+EMBEDDING_PROVIDER_ENV = "MC3_EMBEDDING_PROVIDER"
+
+#: The backend used when nothing is configured.
+#:
+#: The default is the *real* one, never the local stand-in. That is the whole
+#: safety property: a container that sets no environment variables at all must
+#: not be able to end up on the CPU-only path, because a run that never uses
+#: the GPU is rejected outright.
+DEFAULT_EMBEDDING_PROVIDER = "gpu"
+
+#: The CPU-only stand-in used for development and tests.
+LOCAL_EMBEDDING_PROVIDER = "hashing"
+
+#: The second key required to reach the local backend.
+#:
+#: Requesting it by name is not enough -- this must also be set to ``1``. Two
+#: independent switches, because the failure they guard against is silent: a
+#: stray environment variable left over in a shell profile would otherwise
+#: build a CPU-only index that grades as a rejected run, with nothing in the
+#: output saying why.
+ALLOW_LOCAL_BACKEND_ENV = "MC3_ALLOW_LOCAL_BACKEND"
+
+#: Bucket count for the local hashing embedder. Small on purpose -- it is a
+#: plumbing stand-in, not a retrieval model.
+HASHING_DIMENSION = 256

@@ -72,7 +72,24 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
 from pathlib import Path
+
+from chunking import chunks_for_all
+from chunkstore import (
+    ChunkIndex,
+    IndexIncompatible,
+    IndexUnavailable,
+    build_manifest,
+    corpus_fingerprint,
+    save,
+    verify_against,
+)
+from embeddings import provider_from_environment
+from ingestion import walker
+from ingestion.readers import read_file
+from models import ReadStatus
 
 OUTPUT_DIR = Path(os.environ.get("MC2_OUTPUT_DIR", "/app/output"))
 INDEX_DIR = Path(os.environ.get("MC3_INDEX_DIR", "/app/index"))
@@ -92,9 +109,70 @@ def index(corpus: Path) -> None:
 
     Walk defensively: catch per-file, keep going, and record what you could not
     read rather than aborting. See the third bullet in the module docstring.
+
+    This is also the only place any of the expensive work happens. Everything
+    paid for here -- walking, decoding, extracting, chunking, embedding -- is
+    paid once, because each of the ten questions runs in a fresh process and
+    would otherwise repeat all of it inside a 30-second budget.
     """
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    # Your work goes here.
+    started = time.monotonic()
+
+    discovered = walker.discover(corpus)
+    results = [read_file(discovered_file) for discovered_file in discovered.files]
+    chunks = chunks_for_all(results)
+
+    provider = provider_from_environment()
+    vectors: list[list[float]] = []
+    if provider is not None and chunks:
+        vectors = provider.embed([chunk.text for chunk in chunks])
+
+    status_counts: dict[str, int] = {}
+    for result in results:
+        status_counts[str(result.status)] = status_counts.get(str(result.status), 0) + 1
+
+    manifest = build_manifest(
+        fingerprint=corpus_fingerprint(discovered.files),
+        chunks=chunks,
+        file_count=discovered.total_files,
+        provider_id=provider.model_id if provider is not None else None,
+        dimension=provider.dimension if provider is not None else None,
+        status_counts=status_counts,
+        skipped_count=discovered.total_skipped,
+    )
+    save(INDEX_DIR, ChunkIndex(manifest=manifest, chunks=chunks, vectors=tuple(vectors)))
+
+    unreadable = sorted(
+        f"{result.status}: {result.rel_path}"
+        for result in results
+        if not result.is_usable and result.status != ReadStatus.EMPTY
+    )
+    _report_index(corpus, manifest, unreadable, time.monotonic() - started)
+
+
+def _report_index(corpus, manifest, unreadable, elapsed: float) -> None:
+    """Print what the index pass found.
+
+    Written to stderr so it cannot be mistaken for the program's output, and
+    printed at all because ``--index`` is the one pass whose behaviour is
+    invisible in the graded result: if a format silently stops being read, the
+    only symptom is later questions answering wrongly.
+    """
+    print(
+        f"indexed {corpus}: {manifest.file_count} files, "
+        f"{manifest.chunk_count} chunks, "
+        f"embeddings={manifest.provider_id or 'none (lexical only)'}, "
+        f"{elapsed:.1f}s",
+        file=sys.stderr,
+    )
+    print(
+        "  file status: "
+        + ", ".join(f"{name}={count}" for name, count in manifest.status_counts.items()),
+        file=sys.stderr,
+    )
+    if manifest.skipped_count:
+        print(f"  skipped during walk: {manifest.skipped_count}", file=sys.stderr)
+    for line in unreadable:
+        print(f"  not indexed -> {line}", file=sys.stderr)
 
 
 def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
@@ -109,6 +187,18 @@ def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
     does have one scores the same as a wrong guess -- so refusal is safe to use
     honestly and useless to use defensively.
     """
+    try:
+        verify_against(INDEX_DIR, corpus)
+    except (IndexUnavailable, IndexIncompatible) as exc:
+        # Refusing rather than raising: the output contract requires an answer
+        # and a citation list on *every* response, including errors, because a
+        # writer that crashed and a considered refusal must not look alike.
+        print(f"mc3: cannot use the index: {exc}", file=sys.stderr)
+        return "", [], 0.0
+
+    # Retrieval and answer extraction arrive in Stages 3-6. Until then the
+    # honest output is a refusal: the index is loaded and verified, and nothing
+    # in it has been read yet.
     return "", [], 0.0
 
 

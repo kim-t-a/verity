@@ -15,7 +15,7 @@ Living progress log. Updated at the end of every stage. Durable rules live in
 | 1a | Corpus discovery and format detection | ✅ **complete** |
 | 1b | Document readers (pdf, docx, xlsx, csv, text, code) | ✅ **complete** |
 | 1c | Image reader interface + normalised chunks | ✅ **complete** |
-| 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ⬜ not started |
+| 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ✅ **complete** |
 | 3 | Keyword retrieval | ⬜ not started |
 | 4 | Vector retrieval | ⬜ not started |
 | 5 | Hybrid retrieval | ⬜ not started |
@@ -641,3 +641,241 @@ distinct, separately-reported routes.
 **Stage 2 — persistent indexing.** A chunk store written by `--index` and read
 by each `--query` process, plus the embedding interface with a fake provider, so
 the index can be built and exercised with no model and no network.
+
+---
+
+## Stage 2 — Persistent indexing ✅
+
+**Goal:** the channel between the two invocations. `--index` runs once and each
+of the ten questions runs in a **new process**, so nothing held in memory during
+indexing survives to answering. The index is therefore not an optimisation — it
+is the only thing that crosses the boundary, and everything the pipeline will
+later need (chunks, provenance, and vectors when a real model lands) has to fit
+through it.
+
+### Files created
+
+| File | Purpose |
+|---|---|
+| `starter/app/chunkstore.py` | The persisted index: manifest, chunks, vectors; save, load, staleness check |
+| `starter/app/embeddings/__init__.py` | The provider protocol and the rule-7 guard around the CPU backend |
+| `starter/app/embeddings/hashing.py` | The CPU-only stand-in embedder (not a submission candidate) |
+| `tests/test_chunkstore.py` | 32 tests — round trips and, mainly, the refusal paths |
+| `tests/test_embeddings.py` | 19 tests — the guard, the protocol, cross-process determinism |
+| `tests/test_index_cli.py` | 11 tests — the real CLI as subprocesses, both entry points |
+
+### Files modified
+
+- `starter/app/config.py` — index layout constants, embedding-provider names,
+  `INDEX_FORMAT_VERSION`, `HASHING_DIMENSION`.
+- `starter/app/app.py` — `index()` now walks → reads → chunks → optionally
+  embeds → saves; `answer()` loads and verifies the index, then refuses, because
+  retrieval does not exist yet. A `_report_index()` writes what the pass found to
+  stderr.
+- `tests/test_import_graph.py` — three modules added to the bare-name guard
+  (`chunkstore`, `embeddings`, `embeddings.hashing`); 15 → 18 tests.
+
+### Key design decisions
+
+**Three index files, and the manifest is written last.** `chunks.jsonl` and
+`vectors.bin` land first, `manifest.json` last. The manifest is then the commit
+marker: an interrupted `--index` leaves a directory with no manifest, which reads
+as "no usable index" rather than as a half-built one that looks complete. Three
+files rather than one because they have different failure modes — a damaged
+chunk record costs one line, not the whole store, and JSONL stays inspectable
+with `head` and `grep` during development.
+
+**The fingerprint is names and sizes, not contents.** It must be computable at
+query time in milliseconds, before anything is read; hashing file contents would
+spend the per-question budget re-doing the work `--index` already did. Names and
+sizes catch what it is for — an index built over one corpus and queried against
+another — and the digest is taken over sorted `(rel_path, size)` pairs so
+directory listing order cannot make an unchanged corpus look stale. Fields are
+separated by NUL and newline so `("ab","c")` and `("a","bc")` cannot collide;
+that case has its own test.
+
+**A stale index raises rather than warns.** A mismatch means the answers would be
+drawn from text that is not in the corpus being asked about, and they would
+arrive with citations that look right. `StaleIndexError` subclasses
+`IndexIncompatible` so callers that only handle the general case still catch it.
+Refusing costs a startup pass (`--index` is ungraded); a confident wrong answer
+costs the question.
+
+**Every load is validated, not trusted.** Format version, chunk count against
+the manifest, and vector buffer size against `count × dimension × 4`. The size
+check is the one that matters most: a truncated buffer misaligns every vector
+after the cut, so each one silently belongs to the wrong chunk. All of these are
+tested as expected exceptions.
+
+**Text is stored raw, never normalised.** The store keeps what the corpus says;
+`Chunk.normalised` is derived at comparison time. A change to the normaliser then
+needs no rebuild, and an answer can never be quoted in a form the corpus does not
+use. There is a test asserting exactly this.
+
+**The vector/text pairing lives in one object.** `ChunkIndex` holds both, because
+read as two separate files they can be paired wrongly — and a vector matched to
+the wrong chunk yields a citation that looks entirely plausible and is false.
+
+**The rule-7 guard has three independent defences.** The default provider is the
+real one, so an empty environment can never select the CPU path. Naming the
+stand-in is not enough — a second, separately-named variable must also be `1`,
+and only the exact string `"1"` counts, because `"true"` and `"yes"` are what a
+person reaches for next. And the index records its `provider_id`, so a stand-in
+index announces itself in `manifest.json`.
+
+**The stand-in uses `blake2b`, not `hash()`.** Python salts string hashing per
+interpreter, so a `hash()`-based embedder would produce unrelated vectors in the
+`--index` process and in each of the ten `--query` processes. Nothing would
+raise. This is the same silent-wrong-output shape as the three bugs Stage 1
+found, so it is tested directly rather than merely avoided.
+
+### Commands actually run
+
+```bash
+# the guard, and cross-process determinism
+python -m pytest tests/test_embeddings.py tests/test_chunkstore.py -q
+# the CLI as the harness runs it
+python -m pytest tests/test_index_cli.py -q
+# everything
+python -m pytest -q
+
+# a real index over the sample corpus, then a query in a separate process
+MC3_INDEX_DIR=/tmp/mc3-index MC2_OUTPUT_DIR=/tmp/mc3-out \
+  python3 starter/app/app.py --index mc3-corpus
+MC3_INDEX_DIR=/tmp/mc3-index MC2_OUTPUT_DIR=/tmp/mc3-out \
+  python3 starter/app/app.py --corpus mc3-corpus --query-id query_01 --query "..."
+```
+
+### Test results
+
+```
+tests/test_chunkstore.py   32 passed
+tests/test_embeddings.py   19 passed
+tests/test_index_cli.py    11 passed
+------------------------------------------
+whole suite               308 passed in 43.53s
+```
+
+308 − 243 = **65 added** here: 32 chunk store, 19 embeddings, 11 CLI, and 3
+widening the import guard to cover the three new modules.
+
+### A fourth bug, and it was in my own test
+
+The CLI test originally ran the app under `python3 -I`, borrowing the isolation
+discipline from `AGENTS.md`. That invocation **cannot work**:
+
+```
+$ python3 -I starter/app/app.py --index mc3-corpus
+ModuleNotFoundError: No module named 'chunking'
+```
+
+`-I` implies `-P`, which drops the *script's own directory* from `sys.path`, and
+the Dockerfile copies `starter/app/` to `/app/` precisely so the application can
+import its own modules by bare name. The harness runs `python3 /app/app.py`
+without `-I`.
+
+The test was the bug, not the code — but the shape is the familiar one: it
+looked like a strictness improvement and would have made the suite test an
+invocation that does not exist, while the real one went unexercised. The fix is
+to run what the harness runs and replace the child's environment wholesale
+instead, which is the isolation `-I` was being reached for. The reason is now in
+the helper's docstring so it is not "helpfully" re-added. Note this is a
+different thing from the `AGENTS.md` rule, which is about ad-hoc scripts reading
+untrusted corpus files — not about the application, whose import graph depends on
+the script directory being present.
+
+### Verified on the real sample corpus
+
+Index pass (0.5 s, well inside the 600 s startup budget):
+
+```
+indexed mc3-corpus: 13 files, 67 chunks, embeddings=none (lexical only), 0.5s
+  file status: encrypted=1, ok=9, unsupported=1, vision_unavailable=2
+  not indexed -> encrypted: vendor/supplier_agreement_ENCRYPTED.pdf
+  not indexed -> unsupported: vendor/telemetry_capture.dat
+  not indexed -> vision_unavailable: specs/backplane_pinout.png
+  not indexed -> vision_unavailable: support/asset_label.jpg
+```
+
+`manifest.json`:
+
+```json
+{
+  "format_version": 1,
+  "created_utc": "2026-10-13T01:24:55+00:00",
+  "corpus_fingerprint": "004a59f59adcacae8215e2ee25670b4c8a13afb095e896bdaa6fad455eaca7af",
+  "chunk_count": 67,
+  "file_count": 13,
+  "provider_id": null,
+  "dimension": null,
+  "status_counts": {"encrypted": 1, "ok": 9, "unsupported": 1, "vision_unavailable": 2},
+  "skipped_count": 0
+}
+```
+
+The four unreadable files are named individually rather than folded into a
+single failure count, which is what makes the vision gap stay visible instead of
+blending into a general-purpose "some files failed".
+
+Cross-process round trip — `--query` in a **separate process** from `--index`,
+writing the contract's three keys:
+
+```
+$ ... python3 starter/app/app.py --corpus mc3-corpus --query-id query_01 --query "..."
+exit=0
+{"answer": "", "citations": [], "confidence": 0.0}
+```
+
+The empty answer is honest: retrieval arrives in Stages 3–6, and the alternative
+— a stub returning something that looks like an answer — would be a fabricated
+result. With the vector backend enabled by both switches, `vectors.bin` came out
+at **68 608 bytes**, exactly `67 × 256 × 4`.
+
+Query-side load cost, warmed, measured 5× each:
+
+| Index | Load |
+|---|---|
+| 67 chunks, lexical only | 0.5–0.6 ms |
+| 67 chunks + 256-dim vectors | 0.9–1.4 ms |
+
+Under a millisecond and a half against a 30 s per-question budget — the load is
+not a design constraint at this corpus size, which is worth knowing before
+optimising it.
+
+### Proof the determinism test can fail
+
+A test that cannot fail is worse than no test, so the `hash()` trap was
+reproduced deliberately with a throwaway embedder built on the built-in:
+
+```
+PYTHONHASHSEED=0     → [0,0,0,1,1,0,0,0,1,0, ...]   token "junction" in bucket 3
+PYTHONHASHSEED=12345 → [0,0,0,0,0,0,0,0,0,0, ...]   token "junction" in bucket 19
+```
+
+Different seeds, different buckets, no error. That is precisely what the shipped
+embedder must not do, and `test_vectors_are_identical_across_processes` compares
+two seeded subprocesses so it would catch a regression to `hash()`.
+
+### Known limitations
+
+- **The index is lexical-only right now.** `provider_id` is `null` and no
+  `vectors.bin` is written, because no GPU embedding backend exists yet. Keyword
+  retrieval (Stage 3) can be built against this index without waiting for one.
+- **`--index` is not incremental.** It rebuilds from scratch. At 0.5 s over 13
+  files that is free; the graded corpus is larger, and this is worth re-measuring
+  before it is worth fixing.
+- **`corpus_fingerprint` cannot see an edit that preserves size.** A file changed
+  in place with the same byte count fingerprints identically. Accepted
+  deliberately: the alternative is reading every file per query, which is the
+  work the index exists to avoid.
+- The stand-in embedder ships in the image. Kept on purpose — it is what makes
+  the pipeline smoke-testable end to end inside the container with no model
+  download — and the three-defence guard is what stops it being *selected*.
+
+### Next step
+
+**Stage 3 — keyword retrieval.** Given a query, score the 67 chunks and return a
+ranked list with provenance, so the answering stage has evidence to work from.
+This is the first stage that produces something a question can be answered from,
+and it needs no model and no GPU.
+
