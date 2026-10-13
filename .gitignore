@@ -1,0 +1,36 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Virtual environments ----
+# Our working venv lives outside the repo at ~/venvs/mc3 (native ext4).
+# These patterns are a safety net only.
+.venv/
+venv/
+
+# ---- Runtime artefacts written by app.py ----
+# Defaults are /app/index and /app/output inside the container; these cover
+# local runs that override MC3_INDEX_DIR / MC2_OUTPUT_DIR to repo-relative paths.
+index/
+output/
+
+# ---- Model weights ----
+# Weights are COPYed into the image at build time and must never enter git:
+# the image budget is 60 GiB uncompressed and git would be unusable.
+models/
+*.safetensors
+*.bin
+*.gguf
+*.onnx
+*.pt
+
+# ---- Editor / OS ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
