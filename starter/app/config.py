@@ -150,3 +150,59 @@ ALLOW_LOCAL_BACKEND_ENV = "MC3_ALLOW_LOCAL_BACKEND"
 #: Bucket count for the local hashing embedder. Small on purpose -- it is a
 #: plumbing stand-in, not a retrieval model.
 HASHING_DIMENSION = 256
+
+# --- Tokenisation -----------------------------------------------------------
+
+#: The shortest term retrieval will index or match.
+#:
+#: Length one is dropped because a single character is never a value in this
+#: corpus and is almost never a word: ``tq-40`` yields the parts ``tq`` and
+#: ``40``, and ``ORR-FAN-2214-B`` yields a trailing ``b``. Keeping those would
+#: put ``b`` in the index of every part number and let it match any question
+#: containing the letter. Two is the shortest thing that can still be a real
+#: term -- ``94``, ``r2``, ``E7731``.
+MIN_TOKEN_LENGTH = 2
+
+# --- Keyword retrieval (BM25) -----------------------------------------------
+
+#: BM25 term-frequency saturation. A term occurring ten times in a chunk is
+#: worth more than one occurring once, but not ten times more -- without this,
+#: a long chunk that repeats a word would dominate every ranking.
+BM25_K1 = 1.2
+
+#: BM25 length normalisation, from 0 (ignore length) to 1 (fully normalise).
+#:
+#: Set below 1 because chunks here are not uniformly sized, and the short ones
+#: are often the informative ones: a spreadsheet row or a line of source code
+#: states a value outright, while a page of datasheet prose mentions it once
+#: among hundreds of words. Full normalisation would over-reward the long
+#: chunks; ignoring length would let them win on sheer term count.
+BM25_B = 0.75
+
+#: How many chunks retrieval hands to the answering stage.
+#:
+#: The answering stage needs the best few chunks and, for a multi-hop question,
+#: the material with which to start a second search. A larger list costs nothing
+#: at query time but invites the answering stage to cite something weak, and
+#: extra citations score the same as missing ones.
+RETRIEVAL_LIMIT = 10
+
+#: How much a match in a chunk's **file path** counts relative to one in its text.
+#:
+#: The path is searched as a field of its own rather than pasted onto the text,
+#: so that it gets its own length statistics. Concatenating would inflate every
+#: chunk by the length of its path, and paths vary a lot in length -- a chunk
+#: from ``vendor/x.dat`` would be artificially short and one from a deep
+#: directory artificially long, which is a length bias with nothing to do with
+#: the content.
+#:
+#: It exists because questions name documents by *kind*: "the production log",
+#: "the datasheet", "the roadmap". Those words are often nowhere in the chunk --
+#: a log file's lines say ``ERROR E7731: thermal throttle engaged`` and never
+#: the word "log" -- so without the path the only route to the file is the
+#: vocabulary it happens to share with the question.
+#:
+#: Below 1.0 because the filename is weaker evidence than the contents: a chunk
+#: that merely sits in a file called ``logs/...`` should not outrank one that
+#: actually discusses the thing asked about.
+PATH_FIELD_WEIGHT = 0.5

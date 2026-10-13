@@ -83,6 +83,7 @@ from chunkstore import (
     IndexUnavailable,
     build_manifest,
     corpus_fingerprint,
+    load,
     save,
     verify_against,
 )
@@ -90,6 +91,8 @@ from embeddings import provider_from_environment
 from ingestion import walker
 from ingestion.readers import read_file
 from models import ReadStatus
+from retrieval import RetrievedChunk
+from retrieval.keyword import KeywordRetriever
 
 OUTPUT_DIR = Path(os.environ.get("MC2_OUTPUT_DIR", "/app/output"))
 INDEX_DIR = Path(os.environ.get("MC3_INDEX_DIR", "/app/index"))
@@ -189,6 +192,7 @@ def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
     """
     try:
         verify_against(INDEX_DIR, corpus)
+        index = load(INDEX_DIR)
     except (IndexUnavailable, IndexIncompatible) as exc:
         # Refusing rather than raising: the output contract requires an answer
         # and a citation list on *every* response, including errors, because a
@@ -196,10 +200,31 @@ def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
         print(f"mc3: cannot use the index: {exc}", file=sys.stderr)
         return "", [], 0.0
 
-    # Retrieval and answer extraction arrive in Stages 3-6. Until then the
-    # honest output is a refusal: the index is loaded and verified, and nothing
-    # in it has been read yet.
+    retriever = KeywordRetriever(index)
+    results = retriever.search(query)
+    _report_retrieval(query, results)
+
+    # Answer extraction arrives in Stage 6. Retrieval now runs for real and its
+    # output is reported, but nothing here yet turns a chunk into a value, so
+    # the honest response is still a refusal.
     return "", [], 0.0
+
+
+def _report_retrieval(query: str, results: list[RetrievedChunk]) -> None:
+    """Print what retrieval found, to stderr.
+
+    The one window into a stage whose output never reaches the graded JSON:
+    ``answer`` is still a refusal, so without this a retrieval regression would
+    be invisible until Stage 6 and would then look like an answering bug.
+    """
+    print(f"retrieved {len(results)} chunks for {query!r}", file=sys.stderr)
+    for result in results:
+        terms = ", ".join(result.matched_terms)
+        print(
+            f"  {result.rank:>2}. {result.rel_path} [{result.location}] "
+            f"score={result.score:.2f} matched={terms}",
+            file=sys.stderr,
+        )
 
 
 def main() -> int:

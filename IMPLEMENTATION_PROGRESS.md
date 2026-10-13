@@ -16,7 +16,7 @@ Living progress log. Updated at the end of every stage. Durable rules live in
 | 1b | Document readers (pdf, docx, xlsx, csv, text, code) | ✅ **complete** |
 | 1c | Image reader interface + normalised chunks | ✅ **complete** |
 | 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ✅ **complete** |
-| 3 | Keyword retrieval | ⬜ not started |
+| 3 | Keyword retrieval | ✅ **complete** |
 | 4 | Vector retrieval | ⬜ not started |
 | 5 | Hybrid retrieval | ⬜ not started |
 | 6 | Answer extraction and citations | ⬜ not started |
@@ -879,3 +879,227 @@ ranked list with provenance, so the answering stage has evidence to work from.
 This is the first stage that produces something a question can be answered from,
 and it needs no model and no GPU.
 
+
+---
+
+## Stage 3 — Keyword retrieval ✅
+
+### Goal
+
+Turn a question into a ranked list of chunks, each carrying the provenance
+needed to cite it. No model, no GPU, no answer extraction — this stage decides
+**what to look at**, not what the answer is.
+
+Retrieval is judged differently from the final answer. A retrieval miss cannot
+be recovered later, because nothing downstream can read a chunk that was never
+returned. So the failure to guard against is silent: a ranking that looks
+reasonable and has the right chunk at position eleven.
+
+### Files created or modified
+
+| File | Change |
+|---|---|
+| `starter/app/tokenisation.py` | **created** — the two-tier tokenizer |
+| `starter/app/retrieval/__init__.py` | **created** — `RetrievedChunk`, `Retriever` protocol, `rank()` |
+| `starter/app/retrieval/keyword.py` | **created** — two-field BM25 `KeywordRetriever` |
+| `starter/app/config.py` | modified — `MIN_TOKEN_LENGTH`, `BM25_K1`, `BM25_B`, `RETRIEVAL_LIMIT`, `PATH_FIELD_WEIGHT` |
+| `starter/app/app.py` | modified — `answer()` loads the index and runs retrieval |
+| `tests/test_tokenisation.py` | **created** — 27 tests |
+| `tests/test_retrieval_keyword.py` | **created** — 41 tests |
+| `tests/test_import_graph.py` | modified — `tokenisation`, `retrieval`, `retrieval.keyword` added to the bare-name guard |
+
+### Key design decisions
+
+**The tokenizer is two-tier, and that is the load-bearing decision of the stage.**
+A conventional tokenizer splits on every non-alphanumeric character, which
+destroys exactly the strings this challenge asks for: `4.3.2` becomes `4`, `3`,
+`2` — three of the most common terms in any technical corpus, matching hundreds
+of chunks about equally and identifying none. So each run of text emits:
+
+1. its **parts** (`ORR-FAN-2214-B` → `orr`, `fan`, `2214`), always, and
+2. its **joined form** (`orrfan2214b`), but *only when the run contains a digit*.
+
+Both rules are needed and neither subsumes the other. Parts alone lose `4.3.2`
+entirely, since its parts are single characters and get dropped. The joined form
+alone would fuse `field-replaceable` into `fieldreplaceable`, making the corpus's
+"field replaceable" — written with a space in `support/rma_parts.xlsx` —
+mutually invisible with a question that hyphenates it. The digit test is what
+keeps the two apart: `4.3.2` has digits and gets both forms; `dual-rotor` does
+not, so no word is invented that neither corpus nor question uses.
+
+**BM25 rather than counting shared words.** Two mechanisms, both measured below.
+*Inverse document frequency* weights a rare term far above a common one, which is
+what lets a question be matched on its one distinctive term. *Term-frequency
+saturation with length normalisation* stops a chunk winning by repeating itself
+or by being long. The smoothed idf form is `ln(1 + (N - df + 0.5)/(df + 0.5))`;
+the `+1` inside the logarithm is not cosmetic, because without it a term
+appearing in every chunk would score a negative weight — a chunk *penalised* for
+containing a query word.
+
+**The file path is a second field, not concatenated onto the text.** Questions
+name documents by kind — "the production log", "the datasheet" — and a log file's
+lines say `ERROR E7731: thermal throttle engaged` and never the word "log".
+Concatenating would inflate every chunk by its path length, and paths vary a
+lot, which is a length bias with nothing to do with content. As a field of its
+own it gets its own length statistics and its own weight.
+
+**Results carry `matched_terms`, with `path:`-prefixed entries for path hits.**
+A chunk found only by its filename says nothing about the question; the same
+score from content terms means it does. That distinction is what makes a
+surprising ranking debuggable.
+
+**Deliberately absent: stemming, synonyms, phrase matching.** Each trades
+precision for recall, and here the wrong answer and the missing answer cost
+exactly the same — so a change that finds more chunks but ranks the right one
+lower is a loss.
+
+### Commands actually run
+
+```bash
+# Full suite, native ext4 venv
+python -m pytest tests/ -q
+# End to end over the real sample corpus
+MC3_INDEX_DIR=/tmp/mc3-idx MC2_OUTPUT_DIR=/tmp/mc3-out \
+  python3 starter/app/app.py --index mc3-corpus
+MC3_INDEX_DIR=/tmp/mc3-idx MC2_OUTPUT_DIR=/tmp/mc3-out \
+  python3 starter/app/app.py --corpus mc3-corpus --query-id query_01 \
+    --query "What is the maximum junction temperature of the TQ-40?"
+```
+
+### Test results
+
+```
+379 passed in 40.56s
+```
+
+Up from 308 at the end of Stage 2: +27 tokenizer, +41 retrieval, +3 widening the
+import guard.
+
+### Verified behaviour on the real sample corpus
+
+Index pass: 13 files, 67 chunks, 0.2 s, status counts
+`encrypted=1, ok=9, unsupported=1, vision_unavailable=2` — all four unreadable
+files named individually. Query 1:
+
+```
+retrieved 10 chunks for 'What is the maximum junction temperature of the TQ-40?'
+   1. specs/tq40_datasheet_r2.pdf          [page 1 line 4] score=12.57  matched=junction, maximum, path:tq40, temperature
+   2. specs/tq40_datasheet_r1_WITHDRAWN.pdf [page 1 line 5] score=12.53  matched=junction, maximum, path:tq40, temperature
+   3. specs/tq40_datasheet_r2.pdf          [page 1 line 1] score=8.38   matched=40, path:tq40, tq, tq40
+```
+
+**The 0.04 margin between rank 1 and rank 2 is the supersession trap, live.**
+The current revision wins, but by almost nothing — and it wins partly by
+accident, because `_WITHDRAWN` is a longer filename and BM25's length
+normalisation penalises it. This is **not** supersession handling and must never
+be presented as such. Retrieval is right to return both: both chunks genuinely
+match, and a retriever that quietly dropped one would be hiding a judgement it
+is not equipped to make. **Stage 6 must demote withdrawn revisions explicitly.**
+
+### What was measured, and what could not be
+
+This is the part worth reading carefully, because most of it is negative.
+
+**Baseline rank of each expected citation** (top 10, six answerable single-hop
+questions):
+
+| Question | BM25 | Naive word-overlap |
+|---|---|---|
+| 1 maximum junction temperature | **1** | 5 |
+| 2 TQ-60 customer sampling quarter | 1 | 1 |
+| 3 fan assembly part number | 1 | 1 |
+| 4 firmware version for ORR-1847 | 1 | 1 |
+| 5 error code when throttle engages | 1 | 1 |
+| 6 default batch timeout | 1 | 1 |
+| 9 multi-hop (log + CSV) | 6 | 6 |
+
+**The honest headline: on this corpus, BM25's measured advantage over the naive
+scorer is one question.** A scorer that just counts shared words also puts six of
+these seven files at rank 1 and all seven in the top ten. So the sample corpus
+cannot demonstrate the value of idf or length normalisation — it is too small
+and its questions name their answers too directly.
+
+BM25 is still the right choice, for a reason this measurement cannot show: the
+graded corpus is **larger**, and both mechanisms pay off with scale. With 13
+files a common word appears in a handful of chunks and the damage is small; with
+hundreds, a common word matches hundreds of chunks about equally and idf is the
+only thing separating the one that matters. That is reasoning, not evidence, and
+it is labelled as such.
+
+**`PATH_FIELD_WEIGHT = 0.5` is a stated judgement, not a fitted value.** A sweep
+over 0.0 / 0.25 / 0.5 / 1.0 / 2.0 produced differences indistinguishable from
+noise on seven questions — the parameter is not identifiable from this sample.
+Its measurable contribution is exactly one rank position: with the field
+disabled, question 1's citation drops from rank 1 to rank 2 and question 9's
+from 6 to 7. Half a content match is a defensible reading of "a filename is
+weaker evidence than the contents", and it is documented as a judgement so a
+later reader does not mistake it for a tuned constant.
+
+**Two candidate improvements were tried and rejected on measurement:**
+
+- *df-cutoff (corpus-derived stopwords):* changes nothing at all. Not added.
+- *Plural folding:* changes nothing at all, ranks identical. Not added.
+
+Both were rejected rather than kept "just in case", because a mechanism that
+cannot be shown to help is a mechanism that can only break later.
+
+### The two regression tests, and one of them is weak
+
+`test_every_answerable_sample_question_reaches_its_citation` asserts each
+expected citation appears in the top 10. **This is a weak test and is labelled as
+one in its docstring** — the naive baseline passes it too. It is kept as the
+floor beneath the sharper test, because it catches the failures that actually
+happen: an empty index, a tokenizer that stopped matching, a reader that started
+returning nothing, a file dropped from the index.
+
+`test_the_right_file_comes_first_for_the_sample` asserts rank 1. It is fitted to
+six questions and is framed as a **canary, not a requirement**: the challenge
+needs the file within reach, not first, but a weak retriever and a strong one are
+otherwise indistinguishable here. Its docstring says explicitly that when a
+later stage legitimately reorders these, the response is to look at the new order
+and update the expectation deliberately — never to tune a constant until it goes
+green, which would destroy the only signal it carries.
+
+Both are in `tests/`, reading the sample corpus the way
+`tests/test_readers_real_corpus.py` already does. Neither is reachable from
+answering code: the graded corpus shares none of these paths.
+
+### Two bugs found and fixed before committing
+
+1. **A zero-weight field still returned hits.** `score_into` multiplied the
+   score by `weight`, so `path_weight=0.0` produced a score of exactly nothing —
+   but it had already registered the chunk as *matched*, so it came back ranked
+   last, occupying a slot in the top ten that a real match could have used. Fixed
+   by dropping zero-weight fields at construction: a field carrying no weight is
+   not searched, rather than searched and multiplied by zero.
+
+2. **`test_vocabulary_size_counts_both_fields` expected 4, actual 5.** I had not
+   traced `gamma/delta.txt` through the tokenizer. The `/` separates (three
+   tokens: `gamma`, `delta`, `txt`), giving 5 across both fields. The
+   expectation was wrong, not the code.
+
+### Known limitations
+
+- **Question 9's citation sits at rank 6, not 1.** The question says "production
+  log" and "incident"; the log's own lines contain neither word, and "incident"
+  instead matches a comment in `ingest_service.py`. This is the known weak spot
+  and it is **not** to be fixed by tuning retrieval — Stage 6's multi-hop
+  traversal is what closes it, by reading the log first and then searching for
+  what it names.
+- **Superseded revisions are not demoted.** Both `tq40_datasheet_r2.pdf` and
+  `tq40_datasheet_r1_WITHDRAWN.pdf` are returned, 0.04 apart. Stage 6's job.
+- **Length-1 tokens are dropped entirely**, so a question containing a bare `b`
+  or a single-digit value cannot match. Judged acceptable: no value in this
+  corpus is one character.
+- **The `Retriever` protocol is not yet exercised by a second implementation.**
+  It exists so the vector and hybrid retrievers can satisfy it without
+  inheriting; until Stage 4 writes one, that is design intent rather than a
+  verified property. `isinstance` against the runtime-checkable protocol passes.
+
+### Next step
+
+**Stage 4 — vector retrieval.** Embed the chunks (through the provider interface
+already built in Stage 2), embed the query, return cosine-nearest chunks behind
+the same `Retriever` protocol. This is where the GPU is first actually used, and
+where the local hashing embedder stops being adequate for anything but plumbing
+tests.
