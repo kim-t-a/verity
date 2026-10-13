@@ -39,6 +39,7 @@ def test_app_dir_is_on_sys_path() -> None:
         "embeddings.hashing",
         "retrieval",
         "retrieval.keyword",
+        "retrieval.vector",
         "app",
         "ingestion",
         "ingestion.filetypes",

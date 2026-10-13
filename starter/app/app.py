@@ -87,12 +87,13 @@ from chunkstore import (
     save,
     verify_against,
 )
-from embeddings import provider_from_environment
+from embeddings import EmbeddingError, provider_from_environment
 from ingestion import walker
 from ingestion.readers import read_file
 from models import ReadStatus
-from retrieval import RetrievedChunk
+from retrieval import RetrievedChunk, Retriever
 from retrieval.keyword import KeywordRetriever
+from retrieval.vector import VectorRetriever, VectorUnavailable
 
 OUTPUT_DIR = Path(os.environ.get("MC2_OUTPUT_DIR", "/app/output"))
 INDEX_DIR = Path(os.environ.get("MC3_INDEX_DIR", "/app/index"))
@@ -200,9 +201,14 @@ def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
         print(f"mc3: cannot use the index: {exc}", file=sys.stderr)
         return "", [], 0.0
 
-    retriever = KeywordRetriever(index)
-    results = retriever.search(query)
-    _report_retrieval(query, results)
+    # Both retrievers run, and both are reported. Which of them should decide
+    # the answer -- or how to combine them -- is Stage 5's question, and picking
+    # a winner now would be a claim this stage has not earned. Running both also
+    # means the vector path is exercised by every real query rather than only by
+    # its unit tests, which is where a provider mismatch or a stale index would
+    # actually show up.
+    for name, retriever in _retrievers_for(index):
+        _report_retrieval(name, query, retriever.search(query))
 
     # Answer extraction arrives in Stage 6. Retrieval now runs for real and its
     # output is reported, but nothing here yet turns a chunk into a value, so
@@ -210,19 +216,52 @@ def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
     return "", [], 0.0
 
 
-def _report_retrieval(query: str, results: list[RetrievedChunk]) -> None:
-    """Print what retrieval found, to stderr.
+def _retrievers_for(index: ChunkIndex) -> list[tuple[str, Retriever]]:
+    """Every retriever this index and environment can support, and why not others.
+
+    Each unavailable retriever is reported rather than passed over: an index
+    built without a backend, or one whose backend disagrees with what is
+    configured now, still answers questions -- but with the vector half of the
+    system silently missing, which is invisible in the graded output and would
+    otherwise look like the vector stage simply not helping.
+    """
+    retrievers: list[tuple[str, Retriever]] = [("keyword", KeywordRetriever(index))]
+
+    try:
+        provider = provider_from_environment()
+    except EmbeddingError as exc:
+        print(f"  vectors unavailable: {exc}", file=sys.stderr)
+        return retrievers
+
+    if provider is None:
+        print(
+            "  vectors unavailable: no embedding backend is configured, so this "
+            "index is lexical-only",
+            file=sys.stderr,
+        )
+        return retrievers
+
+    try:
+        retrievers.append(("vector", VectorRetriever(index, provider)))
+    except VectorUnavailable as exc:
+        print(f"  vectors unavailable: {exc}", file=sys.stderr)
+
+    return retrievers
+
+
+def _report_retrieval(name: str, query: str, results: list[RetrievedChunk]) -> None:
+    """Print what one retriever found, to stderr.
 
     The one window into a stage whose output never reaches the graded JSON:
     ``answer`` is still a refusal, so without this a retrieval regression would
     be invisible until Stage 6 and would then look like an answering bug.
     """
-    print(f"retrieved {len(results)} chunks for {query!r}", file=sys.stderr)
+    print(f"{name}: {len(results)} chunks for {query!r}", file=sys.stderr)
     for result in results:
-        terms = ", ".join(result.matched_terms)
+        terms = ", ".join(result.matched_terms) or "-"
         print(
             f"  {result.rank:>2}. {result.rel_path} [{result.location}] "
-            f"score={result.score:.2f} matched={terms}",
+            f"score={result.score:.4f} matched={terms}",
             file=sys.stderr,
         )
 

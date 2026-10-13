@@ -17,7 +17,7 @@ Living progress log. Updated at the end of every stage. Durable rules live in
 | 1c | Image reader interface + normalised chunks | ✅ **complete** |
 | 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ✅ **complete** |
 | 3 | Keyword retrieval | ✅ **complete** |
-| 4 | Vector retrieval | ⬜ not started |
+| 4 | Vector retrieval | ✅ **complete** |
 | 5 | Hybrid retrieval | ⬜ not started |
 | 6 | Answer extraction and citations | ⬜ not started |
 | 7 | Image and vision support | ⬜ not started |
@@ -1103,3 +1103,197 @@ already built in Stage 2), embed the query, return cosine-nearest chunks behind
 the same `Retriever` protocol. This is where the GPU is first actually used, and
 where the local hashing embedder stops being adequate for anything but plumbing
 tests.
+
+---
+
+## Stage 4 — Vector retrieval ✅
+
+### Goal
+
+Rank chunks by *meaning* rather than by shared words: embed the question, embed
+every chunk, and compare the angles. Keyword retrieval cannot connect "how hot
+may this part get" to a chunk saying "maximum junction temperature", because no
+word is shared.
+
+### Files created or modified
+
+| File | Change |
+|---|---|
+| `starter/app/retrieval/vector.py` | **created** — `VectorRetriever` and `VectorUnavailable` |
+| `starter/app/config.py` | modified — `MIN_VECTOR_SIMILARITY` |
+| `starter/app/app.py` | modified — `answer()` runs both retrievers and reports each |
+| `tests/test_retrieval_vector.py` | **created** — 26 tests |
+| `tests/test_import_graph.py` | modified — `retrieval.vector` added to the bare-name guard |
+
+### Key design decisions
+
+**The central guard: the question must be embedded by the same backend that
+embedded the chunks.** Two vectors are only comparable if one model produced
+both. A question embedded by model A and chunks embedded by model B land in
+unrelated coordinate systems, and the cosine between them is a meaningless
+number that looks exactly like a score. Nothing raises. Retrieval returns ten
+chunks in a confident order and every one is arbitrary.
+
+This is the same failure shape as the index-format and rule-7 guards -- code
+that runs cleanly and produces quietly wrong output -- so `VectorRetriever`
+refuses to be *constructed* unless `provider.model_id` and `provider.dimension`
+match what the manifest recorded. Refusing loudly costs a keyword-only fallback;
+mixing silently costs every question.
+
+**Normalising chunk vectors once, at construction.** Cosine is a dot product
+divided by both lengths, so scaling every vector to unit length up front removes
+the division from the per-query path. It also means a backend that returns
+unnormalised vectors is handled correctly rather than being trusted. `HashingEmbedder`
+already normalises, so for it the operation is idempotent -- but a real model may
+not, and assuming it did would rank by magnitude, letting a long chunk beat a
+relevant one.
+
+**`MIN_VECTOR_SIMILARITY = 0.0`.** Cosine zero means right angles -- no
+relationship -- and a negative value means *less* related than a random vector.
+Returning those would pad the result list with noise, and a padded list is what
+tempts an answering stage into citing something unsupported. Zero is chosen
+rather than fitted because it is the only threshold that means something on its
+own; a tuned cutoff would need measurements from a real model, and fitting one to
+the hashing stand-in would be fitting a number to a model nobody will use.
+
+**A zero vector is not an error.** A chunk with no tokens embeds to all zeros,
+which has no direction and therefore no angle with anything. Its similarity is
+zero and it never scores. "Normalising" it would be a division by zero.
+
+**Cheap, silent-wrong-answer guard: the query vector's width is checked.** Zipping
+two vectors of different lengths in Python stops at the shorter one, so a backend
+returning the wrong width would produce a *plausible* cosine from whichever
+dimensions happen to line up, and report it as a full match.
+
+**`matched_terms` is empty, deliberately.** Dense retrieval can report *how
+similar* but never *why*. A BM25 result says which terms matched; a cosine says
+only that a number is larger. That is a real loss of debuggability, and the test
+asserting the empty tuple exists so nobody mistakes it for a bug and "fixes" it
+by inventing terms that never matched.
+
+### Commands actually run
+
+```bash
+python -m pytest tests/ -q
+# lexical-only index, then a query against it
+MC3_INDEX_DIR=/tmp/mc3-idx MC2_OUTPUT_DIR=/tmp/mc3-out python3 starter/app/app.py --index mc3-corpus
+# vector index via the permitted local stand-in, then a query
+MC3_EMBEDDING_PROVIDER=hashing MC3_ALLOW_LOCAL_BACKEND=1 ... --index mc3-corpus
+```
+
+### Test results
+
+```
+406 passed in 44.15s
+```
+
+Up from 379: +26 vector retrieval, +1 widening the import guard.
+
+### Verified behaviour
+
+**A lexical-only index reports why it has no vectors, and still answers.**
+
+```
+$ ... --index mc3-corpus
+indexed mc3-corpus: 13 files, 67 chunks, embeddings=none (lexical only), 0.5s
+$ ... --query "What is the maximum junction temperature of the TQ-40?"
+  vectors unavailable: no embedding backend is configured, so this index is lexical-only
+keyword: 10 chunks for 'What is the maximum junction temperature of the TQ-40?'
+   1. specs/tq40_datasheet_r2.pdf [page 1 line 4] score=12.5660
+   2. specs/tq40_datasheet_r1_WITHDRAWN.pdf [page 1 line 5] score=12.5287
+```
+
+**With vectors, both retrievers run and both are reported.**
+
+```
+vector: 10 chunks for 'What is the maximum junction temperature of the TQ-40?'
+   1. specs/tq40_datasheet_r1_WITHDRAWN.pdf [page 1 line 5] score=0.4070
+   2. specs/tq40_datasheet_r2.pdf          [page 1 line 4] score=0.4070
+   3. planning/roadmap_fy27.docx           [paragraph 6]  score=0.3048
+```
+
+### All three mismatch paths, exercised through the real CLI
+
+| Situation | Result |
+|---|---|
+| Vector index, no backend configured for the query | `vectors unavailable: no embedding backend is configured...` → keyword only |
+| Lexical index, backend configured for the query | `vectors unavailable: the index holds no vectors...` → keyword only |
+| Local backend named without the second switch | `vectors unavailable: ... also requires MC3_ALLOW_LOCAL_BACKEND=1` → keyword only |
+
+Every case is loud on stderr, none crashes, none silently mixes vectors. The
+output contract holds (`{"answer": "", "citations": [], "confidence": 0.0}`).
+
+### The finding that matters most from this stage
+
+**The vector path ranks the withdrawn revision *first*.** Both datasheets contain
+identical text, so the stand-in embedder gives them identical vectors -- tied at
+`0.4070` -- and the corpus-position tie-break then puts
+`tq40_datasheet_r1_WITHDRAWN.pdf` ahead of `tq40_datasheet_r2.pdf`, because
+`r1` sorts before `r2`.
+
+BM25 accidentally escaped this: length normalisation penalised the longer
+`_WITHDRAWN` filename, so the current revision won by 0.04. The vector path has
+no such accident and no supersession awareness whatsoever. **This makes
+Stage 6's explicit demotion of withdrawn revisions more urgent, not less** -- and
+it is a concrete reason not to let vector results displace keyword results
+before that demotion exists.
+
+### Measured: the pure-Python scan, and why no numpy
+
+The cosine scan is a plain Python loop. Measured over three runs each, taking
+the minimum:
+
+| Chunks | Dimension | Search (s) |
+|---|---|---|
+| 67 | 256 | 0.001 |
+| 670 | 768 | 0.022 |
+| 6 700 | 768 | 0.143 |
+| 20 000 | 768 | 0.422 |
+| 20 000 | 1024 | 0.564 |
+
+At 20 000 chunks of 768 dimensions the scan costs **0.42 s against a 30 s
+per-question budget** -- 1.4% of it. The graded corpus would have to be an order
+of magnitude larger than any plausible reading of "larger" for this to matter,
+so numpy is not added. That is a measurement, not a guess, and it is the number
+that should be re-checked before reaching for a dependency.
+
+### What this stage cannot show
+
+**Nothing here demonstrates that dense retrieval helps.** The only embedding
+backend that exists is the CPU-only hashing stand-in, which has no notion of
+meaning -- it is the hashing trick over word tokens wearing a vector's clothes.
+So the tests verify the *mechanism*: the arithmetic, the ordering, the
+determinism, and above all the refusals. Retrieval *quality* is a property of the
+real model and is unmeasured until one is on the device.
+
+That is the next decision, and it is a decision rather than a task because it
+requires downloading model weights, which rule 10 forbids doing unasked.
+
+### Known limitations
+
+- **No real embedding backend exists.** `provider_from_environment()` returns
+  `None` for the default `"gpu"`, so a container run today builds a lexical-only
+  index. This is the honest state, and the reason `--index` still succeeds.
+- **Both retrievers run but nothing fuses them.** Choosing between them, or
+  combining them, is Stage 5. Running both now is what keeps the vector path
+  exercised on every real query instead of only in unit tests.
+- **The query-side cost of a real model is unmeasured**, and it is the single
+  biggest risk in the project: each question is a new process, so a naive
+  implementation loads the model ten times inside ten 30-second budgets.
+- **`embeddings.provider_from_environment()` was not changed by this stage.**
+  Adding the real backend is a change to that factory plus a new module under
+  `embeddings/`, and it is deliberately not bundled with the retrieval
+  mechanism.
+
+### Next step
+
+**Two things, and the first is a decision for you.**
+
+1. **Choose the embedding model** (and confirm the download). It must be
+   small enough to ship inside the 60 GiB image and to load fast enough that ten
+   fresh processes each fit in 30 s -- or be paired with a resident worker.
+   Nothing else in the project can be measured on the GPU until this is settled,
+   which makes it the highest-value thing to resolve before the notebook session.
+2. **Stage 5 — hybrid retrieval:** fuse keyword and vector rankings behind the
+   one `Retriever` interface. Its shape depends on (1), because how much weight
+   the vector half deserves depends on what is doing the embedding.

@@ -206,3 +206,21 @@ RETRIEVAL_LIMIT = 10
 #: that merely sits in a file called ``logs/...`` should not outrank one that
 #: actually discusses the thing asked about.
 PATH_FIELD_WEIGHT = 0.5
+
+# --- Vector retrieval -------------------------------------------------------
+
+#: The lowest cosine similarity a chunk may have and still be returned.
+#:
+#: Cosine measures the angle between two vectors, so zero means "at right
+#: angles" -- no relationship at all -- and a negative value means *less*
+#: related than a vector chosen at random. Returning those would fill the result
+#: list with noise, and noise in the list is an invitation for the answering
+#: stage to cite something that does not support its answer.
+#:
+#: Zero is chosen rather than a fitted value because it is the only threshold
+#: that means something on its own: everything above it is at least weakly
+#: related, everything below it is not. A tuned cutoff would need measurements
+#: from a real embedding model, which does not exist yet -- and inventing one
+#: from the hashing stand-in would be fitting a number to a model that is not
+#: going to be used.
+MIN_VECTOR_SIMILARITY = 0.0
