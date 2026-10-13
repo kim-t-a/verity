@@ -85,15 +85,25 @@ class EmbeddingProvider(Protocol):
 
 
 def provider_from_environment() -> EmbeddingProvider | None:
-    """The configured backend, or ``None`` when this build has none yet.
+    """The configured backend.
 
-    Returns ``None`` rather than raising for the real backend because that is
-    the honest state of affairs in Stage 2: no GPU embedding model exists yet,
-    so an index built now is lexical-only. Returning ``None`` lets ``--index``
-    write a perfectly good chunk store and lets keyword retrieval be built and
-    tested against it, instead of blocking both on a model that is not there.
+    The default is the real one, and it is now a real model rather than a
+    placeholder: with no environment set at all -- which is exactly how the
+    harness runs -- this loads the local sentence-transformer onto the GPU and
+    returns it.
+
+    Returns ``None`` only for a build that has no model at all. That case is
+    kept because an index is still perfectly useful without vectors, and
+    refusing to build one would block lexical retrieval on a model that may not
+    be present in a development checkout. It is not reachable in the container:
+    the image ships the weights, and the default provider is the real one.
 
     Raises:
+        LocalModelUnavailable: the real backend was selected but could not start
+            -- missing weights, or no usable device. Raised rather than
+            returning ``None``, because "the model did not load" and "there is
+            no model" must not be the same answer: the first is a fault to fix,
+            the second is a legitimate configuration.
         LocalBackendNotAllowed: the stand-in was named without the second switch.
         UnknownProvider: a name this build does not recognise.
     """
@@ -114,7 +124,14 @@ def provider_from_environment() -> EmbeddingProvider | None:
         return HashingEmbedder(dimension=HASHING_DIMENSION)
 
     if requested == DEFAULT_EMBEDDING_PROVIDER:
-        return None
+        # Also imported here, and for a sharper reason: this module defines the
+        # provider *protocol*, so importing the real backend at module level
+        # would be a circular import. The side effect is that torch is not
+        # imported by `import embeddings`, which keeps the import-graph test
+        # from paying several seconds for a library it never calls.
+        from embeddings.local_model import LocalModelEmbedder
+
+        return LocalModelEmbedder()
 
     raise UnknownProvider(
         f"{EMBEDDING_PROVIDER_ENV}={requested!r} is not a backend this build knows; "

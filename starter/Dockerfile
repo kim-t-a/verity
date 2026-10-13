@@ -21,7 +21,11 @@ WORKDIR /app
 #     docker run --rm --network none your-image:tag python3 /app/app.py --index /app/corpus
 #
 # Weights count against the 60 GiB uncompressed image limit.
-#   COPY models/ /models/
+#
+# Copied before the application code on purpose. Docker caches a layer until one
+# of its inputs changes, so putting the weights first means editing a Python
+# file reuses this 129 MB layer instead of re-copying it on every rebuild.
+COPY models/ /models/
 
 COPY app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

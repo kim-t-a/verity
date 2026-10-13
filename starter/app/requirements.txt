@@ -1,4 +1,22 @@
-# The starter server itself needs nothing beyond the standard library.
-# Add whatever your model needs, e.g.:
-#   transformers>=4.44
-#   pillow>=10.0
+# The base image already ships torch (and Pillow), so torch is deliberately
+# absent here: naming it would either be redundant or, worse, let pip replace
+# the ROCm build with a CPU or CUDA one and quietly cost the run its GPU.
+#
+# transformers is the only thing the embedding backend adds. It is a pure-Python
+# wheel, and its two compiled dependencies -- tokenizers and safetensors -- both
+# publish stable-ABI (cp310-abi3) manylinux wheels, so they install on this
+# image's Python 3.14 without a source build. That was checked against PyPI
+# rather than assumed, because a compiled dependency with no 3.14 wheel would
+# need a toolchain the image does not have.
+#
+# Pinned to the version this checkpoint was actually loaded and measured with.
+# A float would drift to a new major, and transformers majors do change the
+# loading API. The compatible-release specifier allows bug-fix patches within
+# 5.19 while refusing that drift.
+transformers~=5.19.0
+
+# Named explicitly, not left transitive. It is load-bearing that the weights
+# load from safetensors rather than pytorch_model.bin: the .bin format is a
+# pickle and executes code on load, whereas safetensors is pure data. A silent
+# loss of this package would push transformers back onto the pickle path.
+safetensors~=0.8.0

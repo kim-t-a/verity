@@ -27,6 +27,7 @@ from config import (
     HASHING_DIMENSION,
 )
 from embeddings import (
+    EmbeddingError,
     EmbeddingProvider,
     LocalBackendNotAllowed,
     UnknownProvider,
@@ -48,12 +49,25 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_bare_environment_never_selects_the_local_backend(clean_environment: None) -> None:
     """The whole safety property: no environment must not mean "use the CPU".
 
-    ``None`` here means "this build has no GPU backend yet", which is the honest
-    state in Stage 2. What matters is that it is *not* the hashing stand-in -- a
-    default of the local backend would make the failure mode "fine on the
-    laptop, rejected on the grader", silently.
+    Stage 2 could assert this by requiring ``None``, because no GPU backend
+    existed. Now one does, so the assertion has to be written as the property
+    rather than as the absence: a bare environment reaches the *real* backend,
+    which may legitimately fail to start -- missing weights, no GPU -- but must
+    never quietly resolve to the hashing stand-in.
+
+    Both branches are accepted, and the second is why this stays meaningful:
+    if the default were ever changed to the stand-in, ``provider_from_environment``
+    would raise ``LocalBackendNotAllowed`` (its second switch is unset here),
+    which is not caught below, so the test fails loudly rather than passing.
     """
-    assert provider_from_environment() is None
+    try:
+        provider = provider_from_environment()
+    except EmbeddingError:
+        # The real backend was chosen and could not start. That is a fault to
+        # fix, not a silent fallback -- and emphatically not the stand-in.
+        provider = None
+
+    assert not isinstance(provider, HashingEmbedder)
 
 
 def test_naming_the_local_backend_alone_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:

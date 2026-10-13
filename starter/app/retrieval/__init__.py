@@ -30,7 +30,7 @@ next two stages must be able to satisfy it without inheriting from anything here
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -65,6 +65,21 @@ class RetrievedChunk:
     lower than expected is nearly always a chunk that matched two terms instead
     of five, and a chunk scoring higher than expected has usually matched one
     very rare term.
+    """
+
+    sources: tuple[tuple[str, int], ...] = ()
+    """Which retrievers returned this chunk, and at what rank, sorted by name.
+
+    Empty for a result from a single retriever, where it would only restate the
+    obvious; populated by the hybrid retriever, where it is the fusion analogue
+    of :attr:`matched_terms` and answers the same question -- *why did this
+    score as it did?*
+
+    It matters more here than next to a BM25 score, because a fused score is on
+    a scale of its own (see :data:`config.RRF_K`): it is not a cosine and not a
+    term weight, so without the origins a reader has no way to tell whether a
+    number came from one strong vote or two weak ones. Those are very different
+    kinds of evidence and the fused score alone cannot distinguish them.
     """
 
     @property
@@ -105,6 +120,8 @@ class Retriever(Protocol):
 def rank(
     chunks: Sequence[Chunk],
     scored: Iterable[tuple[int, float, tuple[str, ...]]],
+    *,
+    origins: Mapping[int, tuple[tuple[str, int], ...]] | None = None,
 ) -> list[RetrievedChunk]:
     """Order scored chunks deterministically and number them.
 
@@ -116,11 +133,21 @@ def rank(
     order a dict happened to be built in. Position in the corpus is a
     tie-breaker that is arbitrary but *reproducible*, which is the property that
     matters: a wrong answer has to be reproducible before it can be debugged.
+
+    ``origins`` optionally maps a chunk's position to the retrievers that
+    returned it and where each ranked it, and is copied onto the results. It is
+    passed separately from ``scored`` because it is provenance *about* a score
+    rather than part of one, and because the single-retriever callers have none
+    to give.
     """
     ordered = sorted(scored, key=lambda item: (-item[1], item[0]))
     return [
         RetrievedChunk(
-            chunk=chunks[position], score=score, rank=number, matched_terms=terms
+            chunk=chunks[position],
+            score=score,
+            rank=number,
+            matched_terms=terms,
+            sources=(origins or {}).get(position, ()),
         )
         for number, (position, score, terms) in enumerate(ordered, start=1)
     ]

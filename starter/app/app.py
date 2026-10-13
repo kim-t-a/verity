@@ -125,7 +125,27 @@ def index(corpus: Path) -> None:
     results = [read_file(discovered_file) for discovered_file in discovered.files]
     chunks = chunks_for_all(results)
 
-    provider = provider_from_environment()
+    try:
+        provider = provider_from_environment()
+    except EmbeddingError as exc:
+        # Degraded, not raised -- and this mirrors what answer() already does.
+        #
+        # The backend's contract changed with the real model: it used to answer
+        # "there is no model here" by returning None, and now answers "the model
+        # could not start" by raising. A caller that was written for the old
+        # contract crashes on the new one, which is what this catch exists to
+        # stop -- the index pass is the one that has to survive it, because an
+        # index built lexical-only still answers most questions, whereas no
+        # index at all refuses every one of them.
+        #
+        # The failure is printed rather than swallowed, which is what keeps this
+        # from being the silent-degradation shape this project keeps meeting: a
+        # lexical-only index announces itself here *and* in the manifest, where
+        # provider_id is null. It is never a silent switch to the hashing
+        # stand-in -- that still requires both of its own environment switches.
+        print(f"mc3: no embeddings, indexing lexical-only: {exc}", file=sys.stderr)
+        provider = None
+
     vectors: list[list[float]] = []
     if provider is not None and chunks:
         vectors = provider.embed([chunk.text for chunk in chunks])

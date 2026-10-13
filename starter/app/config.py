@@ -151,6 +151,102 @@ ALLOW_LOCAL_BACKEND_ENV = "MC3_ALLOW_LOCAL_BACKEND"
 #: plumbing stand-in, not a retrieval model.
 HASHING_DIMENSION = 256
 
+# --- The real embedding backend ---------------------------------------------
+
+#: Where the model's files live inside the image.
+#:
+#: The Dockerfile copies ``starter/models/`` to ``/models/``, so the weights ship
+#: in the image rather than being fetched at run time -- the container has no
+#: outbound network during evaluation, so a model downloaded on demand would
+#: hang and then time out.
+#:
+#: Overridable because the repository's own copy sits at
+#: ``starter/models/bge-small-en-v1.5`` during development, and the tests and
+#: local CLI runs read it from there.
+EMBEDDING_MODEL_DIR_ENV = "MC3_EMBEDDING_MODEL_DIR"
+DEFAULT_EMBEDDING_MODEL_DIR = "/models/bge-small-en-v1.5"
+
+#: Which device the model is placed on, and the reason this is a named setting
+#: rather than a guess made at run time.
+#:
+#: The default is ``cuda`` -- which is also how ROCm presents itself to torch,
+#: so this single default covers both the CUDA and the ROCm build. The container
+#: must genuinely occupy VRAM; a run that peaks below 1 GiB is judged to have run
+#: on the CPU and rejected. A backend that quietly fell back to the CPU when the
+#: device was missing would therefore produce a run that looks successful and is
+#: disqualified, which is the worst possible failure shape.
+#:
+#: So there is no automatic fallback. Development on a machine without a GPU
+#: sets this to ``cpu`` explicitly, which makes the CPU path a deliberate choice
+#: that someone typed, never something a run drifts into.
+EMBEDDING_DEVICE_ENV = "MC3_EMBEDDING_DEVICE"
+DEFAULT_EMBEDDING_DEVICE = "cuda"
+
+#: The model's name, as it appears in its provider id.
+EMBEDDING_MODEL_NAME = "bge-small-en-v1.5"
+
+#: How token vectors are collapsed into one vector per chunk.
+#:
+#: ``1_Pooling/config.json`` in the model directory declares CLS pooling
+#: (``pooling_mode_cls_token: true``, ``pooling_mode_mean_tokens: false``).
+#: That matters because mean pooling is the habit most tutorials teach for
+#: turning a BERT into a sentence embedder, and using it here would still
+#: produce 384-dimension unit vectors, still rank, and be quietly worse.
+#:
+#: Measured on the sample corpus, the two poolings produce vectors that differ
+#: for all 67 chunks (cosine 0.85-0.98) yet rank all nine answerable questions
+#: identically -- so the sample corpus *cannot* show which is better, and this
+#: setting follows the checkpoint author's declared intent rather than a fitted
+#: measurement. It is a stated judgement, not a validated one.
+EMBEDDING_POOLING = "cls"
+
+#: Output width. Fixed by the model's ``hidden_size``, and checked against the
+#: weights at startup rather than trusted.
+EMBEDDING_DIMENSION = 384
+
+#: Version of the embedding *recipe* -- model, pooling, normalisation.
+#:
+#: Bump this whenever any change would alter the vectors produced for the same
+#: text. It exists so the provider id changes with the behaviour: an index built
+#: with one recipe and searched with another would yield cosines between
+#: unrelated coordinate systems, which is a number rather than an error, and
+#: every citation drawn from it would be unsupported.
+EMBEDDING_RECIPE_VERSION = 1
+
+#: The identity written into the index manifest.
+#:
+#: Derived rather than written out, so that changing the pooling, the dimension
+#: or the recipe version *cannot* leave the id behind. A hand-maintained id is
+#: one careless edit away from describing vectors it no longer produces.
+EMBEDDING_MODEL_ID = (
+    f"{EMBEDDING_MODEL_NAME}-{EMBEDDING_POOLING}"
+    f"-d{EMBEDDING_DIMENSION}-v{EMBEDDING_RECIPE_VERSION}"
+)
+
+#: The longest input the model will read, in wordpiece tokens.
+#:
+#: ``max_position_embeddings`` in the model's config is 512, and anything past
+#: it is discarded silently -- the chunk embeds as though its tail did not
+#: exist. Measured over the sample corpus the longest chunk is 53 tokens, so
+#: the ceiling is far away here; it is enforced rather than assumed because the
+#: graded corpus is larger, and because silent truncation is invisible in the
+#: result.
+MAX_SEQUENCE_TOKENS = 512
+
+#: How many chunks are embedded in one forward pass.
+#:
+#: Pure throughput -- it cannot change the vectors, only how fast they are
+#: produced. Large enough that the per-call overhead disappears, small enough
+#: that a batch of long chunks cannot exhaust memory on a busy device.
+EMBEDDING_BATCH_SIZE = 32
+
+#: The files the model directory must contain before it is used.
+#:
+#: Checked up front so a missing or half-copied model fails with a sentence
+#: naming the file, rather than a stack trace from deep inside a library that
+#: was handed a directory it could not make sense of.
+EMBEDDING_MODEL_REQUIRED_FILES = ("config.json", "model.safetensors", "tokenizer.json")
+
 # --- Tokenisation -----------------------------------------------------------
 
 #: The shortest term retrieval will index or match.
@@ -224,3 +320,103 @@ PATH_FIELD_WEIGHT = 0.5
 #: from the hashing stand-in would be fitting a number to a model that is not
 #: going to be used.
 MIN_VECTOR_SIMILARITY = 0.0
+
+# --- Hybrid retrieval (fusing keyword and vector) ---------------------------
+
+#: Reciprocal-rank-fusion smoothing, from Cormack, Clarke and Buettcher (2009).
+#:
+#: Fusion combines two rankings that are scored on scales with no common unit:
+#: a BM25 score is an unbounded sum of term weights and the best chunk on this
+#: corpus scores around 12.5, while a cosine similarity is bounded by 1 and the
+#: best chunk scores around 0.85. Adding those two numbers is adding metres to
+#: kilograms, and the result is a ranking dominated by whichever scale happens
+#: to be larger -- here, always BM25.
+#:
+#: RRF sidesteps the units entirely by throwing the scores away and keeping only
+#: the *positions*. A chunk's fused score is the sum, over the retrievers that
+#: returned it, of ``1 / (RRF_K + rank)``. Ranks are unitless and comparable, so
+#: nothing needs normalising and there is no scale to get wrong.
+#:
+#: ``RRF_K`` sets how much the top of each list is favoured. At the conventional
+#: 60 the term barely varies down a ten-item list: rank 1 contributes 1/61 and
+#: rank 10 contributes 1/70, a difference of 13%. What dominates instead is
+#: *how many* retrievers returned a chunk, so agreement between the two
+#: becomes the signal. That is the behaviour wanted here -- a chunk both halves
+#: of the system found is far better evidence than one that only the keyword
+#: half liked -- and 60 is kept because it is the published default rather than
+#: a number fitted to the sample questions, which the graded corpus would not
+#: honour. Whether a smaller value ranks better was measured on the sample
+#: corpus rather than assumed, and the answer is that it barely matters: the
+#: top result is identical at every k from 10 to 1000, and only k=0 and k=1
+#: change it (on two questions). Recall is 7 of 9 at every k tested. What does
+#: move is the *tail* of the list -- some questions have three different
+#: top-ten sets across the six values tried -- so the constant is not inert, it
+#: simply has a wide plateau, and 60 sits comfortably inside it. That is a
+#: reason to keep the published value rather than fit one; see the Stage 5 notes
+#: in ``IMPLEMENTATION_PROGRESS.md``.
+RRF_K = 60
+
+#: How many candidates each component retriever is asked for, per result wanted.
+#:
+#: Fusion can only choose between chunks it has been shown. Asking each
+#: retriever for exactly ``RETRIEVAL_LIMIT`` items means the fused list can
+#: never contain a chunk that only one retriever placed 11th, which is the
+#: whole point of running two. Three is a compromise: deep enough that a chunk
+#: ranked just outside one list still gets its second vote, shallow enough that
+#: the union stays small.
+FUSION_CANDIDATE_DEPTH = 3
+
+
+# --- Answer extraction ------------------------------------------------------
+
+#: Words carrying no discriminating power, removed before any overlap is measured.
+#:
+#: Retrieval never needs this list -- BM25's inverse document frequency already
+#: discounts a term that appears everywhere, so ``the`` costs nothing there. The
+#: extractor is doing a different job: it compares one candidate *against one
+#: question* and counts how many of the question's words the candidate's
+#: surroundings account for. With no corpus statistics behind that count, a
+#: question's ``the`` and ``of`` would each contribute exactly as much as its
+#: ``junction``, and every candidate would score the same on them.
+#:
+#: Deliberately short. A long list starts removing words that matter in this
+#: corpus -- ``in`` is stoplisted but ``ingest`` is not, and ``for`` is
+#: stoplisted while ``firmware`` is not -- so the list holds only the words that
+#: are function words in any English question.
+STOPWORDS = frozenset(
+    """
+    a an and any are as at be been but by can could did do does for from had has
+    have how if in into is it its me much no not of on or please should so tell
+    than that the their them then there these they this those to us was were
+    what when where which who whom whose why will with would you your
+    """.split()
+)
+
+#: A file whose *name* says it has been replaced. Matched on the normalised path.
+#:
+#: Kept separate from the content markers below because the two are not equally
+#: trustworthy. A filename that says WITHDRAWN was named deliberately by whoever
+#: retired the document; a sentence saying "superseded" may be describing some
+#: *other* document, and this corpus contains exactly that trap -- the revision
+#: history of ``tq40_datasheet_r2.pdf`` says "Revision 1 is withdrawn", which is
+#: a statement *about* r1 sitting inside r2. Reading that as evidence that r2 is
+#: withdrawn would invert the answer.
+SUPERSEDED_PATH_MARKERS = ("WITHDRAWN", "SUPERSEDED", "OBSOLETE", "DEPRECATED")
+
+#: A phrase in a file's own text saying the file itself is no longer current.
+#:
+#: Only counted when the document is also *naming itself*, which is what the
+#: first-person forms here encode: "this document is superseded", "do not design
+#: to these numbers". See :mod:`answering.supersession` for how the self-
+#: reference is actually checked -- a bare "superseded" substring is not enough,
+#: and treating it as enough is the trap described above.
+SUPERSEDED_TEXT_MARKERS = (
+    "IS WITHDRAWN",
+    "IS SUPERSEDED",
+    "HAS BEEN SUPERSEDED",
+    "SUPERSEDED BY",
+    "IS OBSOLETE",
+    "NO LONGER CURRENT",
+    "DO NOT DESIGN TO",
+    "DO NOT USE THIS",
+)
