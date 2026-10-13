@@ -1,0 +1,10 @@
+# Development-only dependencies. These are NOT shipped in the container image.
+#
+# The image installs `starter/app/requirements.txt`. This file is for the local
+# test suite, which lives outside the image payload on purpose: `starter/app/`
+# is copied to `/app/`, so anything placed there counts against the 60 GiB image
+# budget and adds to build and startup time.
+#
+# Install with:  ~/venvs/mc3/bin/python -m pip install -r requirements-dev.txt
+
+pytest==9.1.1
