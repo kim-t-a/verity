@@ -1297,3 +1297,874 @@ requires downloading model weights, which rule 10 forbids doing unasked.
 2. **Stage 5 — hybrid retrieval:** fuse keyword and vector rankings behind the
    one `Retriever` interface. Its shape depends on (1), because how much weight
    the vector half deserves depends on what is doing the embedding.
+
+---
+
+## Stage 4b, part 1 — the embedding model, fetched and verified
+
+### Goal
+
+Put real model weights inside the Docker build context, so that the image can
+carry them. The container has no network at evaluation time, so a model that is
+downloaded at run time hangs and scores zero. Fetching has to happen now, on the
+laptop, and the result has to ship in the image.
+
+### Files
+
+| File | Change |
+|---|---|
+| `scripts/fetch_model.py` | new — a stdlib-only downloader with structural verification |
+| `starter/models/bge-small-en-v1.5/` | new — 129 MB of weights and tokenizer, git-ignored, Docker-visible |
+
+No file under `starter/app/` changed. The shipped payload is still stdlib-only.
+
+### Design decisions
+
+**`BAAI/bge-small-en-v1.5`, pinned to a commit.** 33.4 M parameters, 384
+dimensions, float32, 129 MB on disk. Small enough that the image budget is not
+in question and fast enough that a per-process load has a chance of fitting the
+30 s budget. Pinned to commit `5c38ec7c…` rather than to `main`: `main` is a
+moving target, and a re-upload upstream would silently change the weights under
+a build that is supposed to be reproducible.
+
+**`model.safetensors`, never `pytorch_model.bin`.** The repository publishes both,
+holding identical weights. A `.bin` file is a Python pickle, and loading a pickle
+executes whatever code it names; `safetensors` is a JSON header plus a flat
+buffer of numbers, with no code path at all. The choice costs nothing and removes
+a class of risk permanently, rather than trusting a file to stay benign.
+
+**Stdlib `urllib`, not `huggingface_hub`.** Six GET requests do not justify
+`requests` + `tqdm` + `filelock` + `fsspec`, every one of which would also need a
+Python 3.14 wheel in the image. `scripts/fetch_model.py` imports nothing outside
+the standard library.
+
+**An explicit file list, not a wildcard.** A downloader that mirrors whatever is
+upstream cannot distinguish a needed config from a test fixture — and
+`pytorch_model.bin` is precisely the file a wildcard would sweep in.
+
+**Verification without torch.** `check_safetensors()` parses the header with
+`struct` + `json` and cross-checks the weight shapes against `config.json`. A
+check that requires the very dependency it is validating proves nothing.
+
+### Commands
+
+```
+python3 -I scripts/fetch_model.py --destination starter/models/bge-small-en-v1.5
+```
+
+### Results
+
+```
+  hidden size: 384
+  vocabulary:  30522 tokens
+  tensors:     200
+  max tokens:  512
+model ready at starter/models/bge-small-en-v1.5
+```
+
+Confirmed on disk: 129 MB total, `model.safetensors` 133,466,304 bytes, and
+`find` for `*.bin`/`*.pt`/`*.pth` returns nothing. The float32 dtype checks out
+arithmetically — 30,522 × 384 embedding rows plus 12 transformer layers is about
+33.4 M parameters, and 33.4 M × 4 bytes ≈ 133 MB, matching the file exactly.
+
+### What this does NOT establish
+
+**The numbers are unverified.** The header parses and the shapes agree with the
+config; nothing here shows the weights produce *correct* embeddings. That needs a
+forward pass, which needs torch, which is not installed. Structural soundness and
+correct behaviour are different claims and only the first has been earned.
+
+### A finding that changes Stage 4b
+
+`1_Pooling/config.json` states:
+
+```
+"pooling_mode_cls_token":  true,
+"pooling_mode_mean_tokens": false
+```
+
+**This model pools at `[CLS]`, not by averaging token vectors.** Mean pooling is
+the habit most tutorials teach for turning a BERT into a sentence embedder, and
+using it here would produce 384-dimension unit vectors, a working retriever, and
+quietly worse rankings — the silent-degradation shape, not an error.
+
+`modules.json` confirms the full declared pipeline:
+`Transformer → Pooling(CLS) → Normalize`. The trailing `Normalize` is consistent
+with `VectorRetriever`, which normalises defensively rather than trusting a
+backend to have done it, so there is no double-normalisation hazard.
+
+Two smaller facts from the same read:
+
+- **`do_lower_case: true`** — the tokenizer lowercases, matching `tokenise()`.
+  No casing mismatch between the lexical and dense halves.
+- **`max_position_embeddings: 512`** makes `MAX_CHUNK_CHARS = 2000` *checkable*,
+  and the existing comment claiming chunks embed "whole without silent
+  truncation" is optimistic rather than verified: 2000 characters of dense
+  technical prose is plausibly 450–550 wordpiece tokens. **To be measured against
+  the real tokenizer, not assumed.**
+
+### Corrections to earlier notes
+
+`starter/Dockerfile` states that the mandated base image supports **both gfx942
+(MI300X, CDNA) and gfx1100 (Navi 31, RDNA3)**. The RDNA3 concern recorded earlier
+is therefore narrower than written: torch itself is covered. flash-attention,
+bitsandbytes and vLLM remain separately unverified on this card.
+
+### Known limitations
+
+- The Dockerfile's `COPY models/ /models/` is still commented out, and
+  `requirements.txt` still declares nothing, so the image does not yet carry the
+  model. Both are Stage 4b's remaining work.
+- There is no `.dockerignore` under `starter/`. Harmless today; worth adding
+  before the build context grows further.
+- The model has never been executed.
+
+### Next step
+
+Stage 4b, part 2 — the real embedding backend. Blocked on one decision: whether
+to install CPU-only torch locally (~2.5 GB) so the backend can actually be run
+and the CLS-versus-mean question settled empirically, or to write it unverified
+and debug it on the notebook inside a three-hour window. Rule 10 requires asking
+before a download of that size.
+
+---
+
+## Stage 4b, part 2 — the real embedding backend
+
+### Goal
+
+Make the default provider a real model on the GPU, so that a container run with
+no environment at all stops being silently lexical-only. This closes the gap
+Stage 4 named and left open.
+
+### Files
+
+| File | Change |
+|---|---|
+| `starter/app/embeddings/local_model.py` | new — `LocalModelEmbedder` and `LocalModelUnavailable` |
+| `starter/app/embeddings/__init__.py` | `provider_from_environment()` returns the real backend for the default |
+| `starter/app/config.py` | model directory, device, pooling, dimension, recipe version, batch size |
+| `starter/app/app.py` | `index()` degrades instead of crashing when a backend will not start |
+| `starter/app/requirements.txt` | `transformers~=5.19.0`, `safetensors~=0.8.0` |
+| `starter/Dockerfile` | `COPY models/ /models/` enabled, placed before the code copy |
+| `starter/.dockerignore` | new — excludes `__pycache__`; `models/` deliberately kept |
+| `tests/test_embeddings_local.py` | new — 19 tests |
+| `tests/test_embeddings.py` | the bare-environment guard restated as a property |
+| `tests/test_import_graph.py` | `embeddings.local_model` added |
+
+### Design decisions
+
+**No device fallback.** If the model cannot be placed on the requested device,
+`LocalModelUnavailable` is raised; the code never continues on the CPU. A CPU run
+is *rejected* by the challenge, so a silent fallback converts a loud failure into
+an invisible one. Development without a GPU sets `MC3_EMBEDDING_DEVICE=cpu`
+explicitly, making the CPU path something a person typed.
+
+**CLS pooling, matching the checkpoint.** See part 1: the measurement could not
+separate the poolings, so this follows the author's declared intent and is
+recorded here as a stated judgement rather than a validated one.
+
+**The provider id is derived, not written out.** `EMBEDDING_MODEL_ID` is
+assembled from the model name, pooling, dimension and recipe version, so
+changing the pooling *cannot* leave the id describing vectors it no longer
+produces. `VectorRetriever` compares that id against the manifest, which is what
+stops an old index being searched with new vectors.
+
+**`torch` and `transformers` are imported inside `__init__`.** The container
+starts ten fresh processes and the import-graph guard imports every module in the
+payload; a module-level import would charge every one of them several seconds for
+a library it may not call.
+
+**`import embeddings` does not import torch.** This falls out of the above and is
+worth stating: it is what keeps the import-graph test fast, and it also avoids a
+circular import, since `embeddings/__init__.py` defines the protocol the backend
+implements.
+
+### A bug this stage found in existing code
+
+`index()` called `provider_from_environment()` unguarded while `answer()` already
+caught `EmbeddingError`, printed the reason and continued keyword-only. The two
+paths disagreed, and `index()` had the worse behaviour: a backend that could not
+start would abort the whole pass, leaving no index, so all ten questions would
+refuse and the submission would score nothing.
+
+Fixed by degrading in `index()` the same way `answer()` does. The failure is
+printed and recorded — the manifest's `provider_id` is null — so a lexical-only
+index announces itself in two places and is never confused with an intended one.
+The rule-7 guard is untouched: the hashing stand-in still requires both of its
+switches, and degrading to *no vectors* is not the same as degrading to the CPU
+stand-in.
+
+### Commands
+
+```
+python3 -m pytest tests/ -q
+MC3_EMBEDDING_MODEL_DIR=$PWD/starter/models/bge-small-en-v1.5 \
+MC3_EMBEDDING_DEVICE=cpu MC3_INDEX_DIR=/tmp/mc3idx MC2_OUTPUT_DIR=/tmp/mc3out \
+  python3 starter/app/app.py --index mc3-corpus
+```
+
+### Results
+
+**426 tests pass**, up from 406. Nineteen new, one for the import guard.
+
+Index built with the real model:
+
+```
+indexed mc3-corpus: 13 files, 67 chunks, embeddings=bge-small-en-v1.5-cls-d384-v1, 8.1s
+  file status: encrypted=1, ok=9, unsupported=1, vision_unavailable=2
+```
+
+Every hazard behaved: the encrypted PDF and the unknown binary are skipped, and
+both images report `vision_unavailable` rather than disappearing — which is rule
+8 holding, and which is why the two image questions currently cannot rank.
+
+Query 1 through the real CLI, a fresh process as the harness runs it. Keyword
+puts the correct revision first by 0.037; the vector path puts the **withdrawn**
+revision first:
+
+```
+keyword: 1. specs/tq40_datasheet_r2.pdf            score=12.5660
+         2. specs/tq40_datasheet_r1_WITHDRAWN.pdf  score=12.5287
+vector:  1. specs/tq40_datasheet_r1_WITHDRAWN.pdf  score=0.8503
+         2. specs/tq40_datasheet_r2.pdf            score=0.8320
+```
+
+This is the Stage 3 accidental escape and the Stage 4 stand-in finding,
+reproduced together, with the real model, in the real pipeline. Stage 6's
+explicit demotion of withdrawn revisions is now a measured requirement.
+
+### The per-question budget, measured
+
+| step | cost |
+|---|---|
+| `import torch` | 1.39 s |
+| `import transformers` | 1.03 s |
+| load tokenizer + weights | ~2.5 s |
+| whole query process | 8.99 s |
+
+Against a 30 s per-question limit and a 600 s run limit, ten questions cost
+roughly 90 s. **The resident worker is not needed**, which retires the largest
+architectural risk carried since Stage 4.
+
+This is measured with the weights on the 9p mount, which inflates file reads; the
+image's own filesystem should be faster. The conclusion holds either way, since
+even a doubling stays inside the budget. It depends on the embedding model being
+small and on no generative model being in the answer path — if Stage 6 adds one,
+this must be re-measured.
+
+### Known limitations
+
+- **No answer is produced.** The JSON is still `{"answer": "", "citations": [], "confidence": 0.0}`,
+  correctly shaped but empty; turning chunks into values is Stage 6.
+- **Nothing here runs on a GPU.** Every measurement is CPU. The device guard is
+  tested in the direction that is reachable without one — that `cuda` is refused
+  when absent — and the positive direction is untested until the notebook.
+- **`transformers~=5.19.0` was verified on Python 3.12, not 3.14.** The
+  dependency *does* have 3.14-compatible wheels (checked against PyPI), but the
+  library was never executed on 3.14. This is the first thing to verify in the
+  built image.
+- **Dense retrieval has still not been shown to beat keyword retrieval.** The
+  one question where they differ, they disagree *wrongly*.
+- **The `2_Normalize` module in `modules.json` is not separately applied.** This
+  backend normalises in `embed()` and `VectorRetriever` normalises again, so the
+  effect is present; the declared module itself is unused, which is fine because
+  this backend does not load sentence-transformers.
+
+### Next step
+
+**Stage 5 — hybrid retrieval.** Fuse the two rankings behind the one `Retriever`
+interface. The shape is now constrained by measurement rather than by taste: the
+vector half currently *loses* the one question where the two disagree, and loses
+it to a superseded file, so fusion cannot simply average them and hope.
+
+---
+
+## Stage 5 — hybrid retrieval
+
+**Status: done.** 451 tests pass (up from 426). Fuses the keyword and vector
+rankings behind the one `Retriever` interface, using reciprocal rank fusion.
+
+### The files
+
+| File | Change |
+|---|---|
+| `starter/app/retrieval/hybrid.py` | **new** — `HybridRetriever`, `reciprocal_rank_fusion`, `describe_sources` |
+| `starter/app/retrieval/__init__.py` | `RetrievedChunk.sources` field; `rank(..., origins=)` |
+| `starter/app/config.py` | `RRF_K = 60`, `FUSION_CANDIDATE_DEPTH = 3` |
+| `starter/app/app.py` | `answer()` now runs one fused retriever, not two reported side by side |
+| `tests/test_retrieval_hybrid.py` | **new** — 24 tests |
+| `tests/test_import_graph.py` | `retrieval.hybrid` added to the bare-name import guard |
+
+### Why RRF and not a weighted sum of scores
+
+The two retrievers are scored on scales with no common unit. Measured on this
+corpus: the best BM25 score is about **12.5** and the best cosine is about
+**0.85**. Adding those is adding metres to kilograms, and the result would be
+decided by BM25 every time. Fixing that needs normalisation and a weight, and
+both would be numbers fitted to whichever questions happened to be at hand —
+the graded corpus is different and larger.
+
+RRF discards the scores and keeps the positions: a chunk's fused score is the
+sum over the retrievers that returned it of `1 / (RRF_K + rank)`. Ranks carry no
+units, so there is nothing to normalise and no scale to get wrong. It adds
+exactly one constant, kept at the published 60.
+
+### Measured: the disagreement is a dead heat, to the bit
+
+Stage 4b measured the two halves disagreeing on question 1. Fused, the top two
+results are **exactly equal**:
+
+```
+1. specs/tq40_datasheet_r2.pdf            score=0.03252247488101534  via=keyword#1+vector#2
+2. specs/tq40_datasheet_r1_WITHDRAWN.pdf  score=0.03252247488101534  via=keyword#2+vector#1
+   exactly equal: True       equals 1/61 + 1/62 by hand: True
+```
+
+Each chunk collects one first place and one second place, so the two fused
+scores are the same two terms added in the other order. **Fusion does not
+resolve this and cannot.** What breaks the tie is corpus position, which the
+hybrid assigns in component-registration order — so listing `vector` first
+prints the *withdrawn* revision at rank 1 instead. Both directions are pinned in
+`test_the_dead_heat_is_broken_by_registration_order_and_not_by_evidence`.
+
+This is the measured requirement on Stage 6: **superseded revisions must be
+demoted by an explicit answering-stage rule.** A fusion that quietly favoured
+one half would be hiding a judgement while pretending to make none.
+
+### Measured: what fusion actually bought
+
+Recall@10 is useless here — ten results out of 67 chunks is a sixth of the
+corpus, so all three configurations score **7/9** and the two misses are the
+image questions, whose files produce no chunks to rank. Every retriever fails
+those correctly.
+
+The sensitive measure is the rank of the first chunk belonging to an expected
+citation — the chunk the answering stage reads first:
+
+| question | keyword | vector | hybrid |
+|---|---|---|---|
+| q1 (r2 vs r1_WITHDRAWN) | 1 | 2 | **1** |
+| q9 (two files) | 5 | 1 | **2** |
+| other five measurable | 1 | 1 | 1 |
+| **sum of ranks** | **11** | **8** | **8** |
+
+Neither half is good at both. Keyword nails the supersession question and is
+*fifth* on the two-file one; vector is exactly the reverse. Fusion is the only
+configuration not bad at either — a **robustness** argument, not an accuracy one.
+
+**Two caveats, stated because they bound the claim.** The q1 rank-1 is *not*
+fusion merit: those two chunks tie exactly, so it is the positional tie-break,
+and keyword happens to be registered first. Only the q9 result is the consensus
+effect working as designed, where a file both halves liked beats chunks only one
+half did. And with seven of nine questions already tied at rank 1, the entire
+signal comes from two questions — this corpus cannot establish that fusion helps
+on the graded one.
+
+So the Stage 4b open risk is **narrowed, not closed**: dense retrieval still has
+not been shown to beat keyword outright, but the combination has been shown not
+to be *worse* than either half on any measurable question.
+
+### Measured: RRF_K has a wide plateau
+
+| k | recall@10 | top-1 differs from k=60 on |
+|---|---|---|
+| 0 | 7/9 | q8, q9 |
+| 1 | 7/9 | q8, q9 |
+| 10 | 7/9 | none |
+| 60 | 7/9 | — |
+| 100 | 7/9 | none |
+| 1000 | 7/9 | none |
+
+The top result is identical for every k from 10 to 1000; only 0 and 1 move it.
+The *tail* does vary — q1 shows three distinct top-ten sets across the six
+values, q2 shows four — so the constant is not inert, it just has a plateau, and
+60 sits well inside it. That is a reason to keep the published value rather than
+fit one.
+
+### Design decisions worth naming
+
+- **`RetrievedChunk.sources`** — which retrievers returned a chunk and where
+  each ranked it. A fused score is on a scale of its own (0.0325 here, neither a
+  cosine nor a term weight), so it cannot be read without knowing whether it came
+  from one strong vote or two weak ones. It is the fusion analogue of
+  `matched_terms`, and the diagnostics print it as `via=keyword#1+vector#2`.
+- **`matched_terms` survive fusion** from whichever half has them. Keyword can
+  explain itself; cosine cannot. Dropping the terms at the fusion step would
+  throw away the only explanation the system has exactly where the ranking
+  becomes hardest to read.
+- **Components are asked for `limit × 3` candidates.** Fusion can only choose
+  between chunks it has been shown; asking for exactly ten would mean a chunk
+  both halves placed eleventh could never be rescued.
+- **An empty hybrid is refused.** A retriever returning nothing for every
+  question is indistinguishable in the graded output from a corpus that lacks
+  the answer — the silent-failure shape this project keeps meeting.
+- **One retriever down preserves its order.** With a single component,
+  `1/(k+rank)` still decreases with rank, so the fused order equals the input
+  order. Asserted rather than assumed, because a fusion that reordered here would
+  silently degrade every lexical-only run.
+
+### A trap found while running this
+
+`python -I starter/app/app.py` **fails** with `ModuleNotFoundError: No module
+named 'chunking'`. Isolated mode removes the script's directory from
+`sys.path`, and `app.py` imports its siblings by bare name. The harness runs
+`python3 /app/app.py` *without* `-I`, so this is not a live bug — but
+AGENTS.md's "run `python3 -I` on scripts reading untrusted corpus data" must
+never be applied to `app.py` itself. It applies to *our* tooling, not to the
+program under test.
+
+### What is still not verified
+
+- **Nothing has run on a GPU.** Every measurement above is CPU.
+- `transformers` was executed here on **Python 3.12**, still not 3.14.
+- The fused ranking has **not** been shown to help on a corpus larger than 13
+  files; the measurement's entire signal is two questions.
+
+### Next step
+
+**Stage 6 — answer extraction and citation selection.** Retrieval now returns a
+fused ranking and `answer()` still refuses, which is why the output JSON is
+still `{"answer": "", "citations": [], "confidence": 0.0}`.
+
+Two things about Stage 6 are now *measured requirements* rather than design
+preferences:
+
+1. **Superseded revisions must be demoted by an explicit rule.** Fusion was
+   shown to produce an exact tie between `tq40_datasheet_r2.pdf` and
+   `tq40_datasheet_r1_WITHDRAWN.pdf`, broken only by which component was
+   registered first. Nothing in retrieval separates them.
+2. **Citations are a necessity judgement, not a ranking.** The rule is "would
+   removing this file make the answer impossible" — extra citations score zero,
+   exactly like missing ones. The fused ranking gives candidates; it does not
+   give the set.
+
+Also still open and carried forward: the two image questions (q7, q8) cannot be
+answered by any amount of retrieval work, because the vision path does not
+exist yet. `ingestion/readers/image.py` reports `vision_unavailable` for both,
+so rule 8 holds — it refuses rather than inventing text — but those two
+questions will be refused until Stage 7.
+
+---
+
+# Stage 6a — answer value extraction
+
+**Status: complete and measured.** `answer()` now returns a real answer value
+for every question whose evidence is readable text. Citations are still
+**provisional** — see below — and Stage 6b replaces them.
+
+## Files
+
+| File | Change |
+|---|---|
+| `starter/app/answering/__init__.py` | new — package docstring, public API |
+| `starter/app/answering/shapes.py` | new — `AnswerShape`, `ValueSpan`, `question_shapes`, `value_spans`, `content_terms` |
+| `starter/app/answering/supersession.py` | new — `is_superseded`, `superseded_paths` |
+| `starter/app/answering/candidates.py` | new — `Candidate`, `candidates_from` |
+| `starter/app/answering/extract.py` | new — `Extraction`, `extract`, the lexicographic ordering |
+| `starter/app/app.py` | `answer()` calls `extract()`, returns value + provisional citation; new `_report_extraction` |
+| `tests/test_answering_{shapes,supersession,candidates,extract}.py` | new — 66 tests |
+| `tests/test_import_graph.py` | 5 new modules in the parametrise list |
+
+## The design decision that matters: lexicographic, not weighted
+
+Six signals, compared in priority order; the first that separates two candidates
+decides. No weights, because every weight would be a number invented here with
+nothing to fit it against, and the graded corpus is different and larger.
+
+```
+1. superseded          a replaced revision never wins
+2. wanted shape        the kind of value the question asked for
+3. overlap             share of the question's content words the chunk explains
+4. follows_equals      a field's value beats a mention of one
+5. retrieval_rank      the fused ranking's own opinion
+6. position            (location, rank) — deterministic last resort
+```
+
+**Supersession is first, and it has to be**, because it is the one signal that
+answers a question the other five cannot see: `94` in r2 and `105` in r1 match
+the question identically and differ only in which revision is current.
+
+## Three defects the tests caught before the corpus did
+
+Each was silent — no exception, no warning, just a wrong or empty result.
+
+1. **The content supersession markers were dead code.** `config` holds them as a
+   person would write them (`"IS WITHDRAWN"`, with spaces) and they were compared
+   against `normalise(text)`, which *deletes all whitespace*. `"IS WITHDRAWN" in
+   "THISREVISIONISWITHDRAWN"` is false for every document in every corpus, so the
+   whole content half of the rule never fired. Fixed by normalising the markers
+   once at import (`normalise(marker)`), with the reason recorded at the
+   constant.
+2. **A value at the end of a sentence matched nothing.** The trailing guard on
+   the number and version patterns was `(?![\w.])`, which forbids *any* following
+   full stop — so `is 94.` and `Version 4.3.2.` produced no span at all, while
+   `is 94 C.` worked. The guard now forbids a following word character and a full
+   stop only when a digit follows it, which keeps the `4.2x`-is-not-a-version
+   rejection and admits the sentence.
+3. **Hints matched inside words.** Hints were substring-matched against the
+   whitespace-deleted question, so `identify` voted for a *quarter* (it ends in
+   `fy`) and `rebuild` voted for a *version* (it contains `build`). A hint now
+   matches a whole word or a run of consecutive words. The `FY` hint was then
+   dropped entirely: a question that merely *names* a fiscal year ("What was the
+   FY27 revenue?") wants a number, and the question that wants a quarter says
+   "quarter" or "fiscal" — which the sample set's phrasing does.
+
+## Two defects the measurement caught
+
+4. **Hyphenated English was an identifier.** The pattern required a letter but
+   never a digit, so `follow-on` and `field-replaceable` were offered as
+   candidate part numbers — and `follow-on` won q8 outright, returning a word
+   that is not a value. Now both a letter and a digit are required, which is also
+   the rule the tokeniser already applies (a run only gets a joined spelling when
+   it contains a digit). q8 still fails, because it is a vision question.
+5. **A plausible reordering, refuted by measurement.** `follows_equals` (a field
+   value beats a prose mention) looked like it should outrank overlap — my own
+   docstring claimed it existed to decide one decoy row. Promoting it cost
+   **two questions**: q1 returned `212` (a datasheet field) over the `94` asked
+   about, and q9 returned `4.2.0` (a *different* ticket's `fixed_in`) over the
+   right row's `4.3.2`. `key=value` is everywhere in this corpus, and only
+   topical overlap can say *which* of several identically-shaped rows is meant.
+   Reverted, and the docstring's false claim corrected.
+
+## Measured result — 10 sample questions, real CLI, one process each
+
+| | |
+|---|---|
+| answer correct | **7 / 10** |
+| citation set exact | **6 / 10** |
+| per question | 9.0–10.6 s (budget 30 s) |
+| index pass | 8.4 s, 13 files, 67 chunks, 2 unreadable, 2 vision-unavailable |
+
+| n | got | expected | why |
+|---|---|---|---|
+| 1 | `94` | `94` | ✓ — supersession demoted r1; fusion alone could not |
+| 2 | `Q3 FY27` | `Q3 FY27` | ✓ |
+| 3 | `ORR-FAN-2214-B` | `ORR-FAN-2214-B` | ✓ — `follows_equals` had to *not* trump overlap here |
+| 4 | `4.3.2` | `4.3.2` | ✓ |
+| 5 | `E7731` | `E7731` | ✓ |
+| 6 | `180` | `180` | ✓ — beat the `60` named in a comment |
+| 7 | `E7731` | `B14` | ✗ — vision question, file is `backplane_pinout.png` |
+| 8 | `TQ-40` | `REV-C2` | ✗ — vision question, file is `asset_label.jpg` |
+| 9 | `4.3.2` | `4.3.2` | answer ✓, **citation set wrong** — cited 1 of 2 files |
+| 10 | `7` | `""` | ✗ — refusal case; `7` is a lead-time field, not a price |
+
+**All three wrong answers are stages not yet built**, not extraction failures:
+q7 and q8 need vision (Stage 7), q10 needs the refusal judgement and q9 the
+multi-hop chain (both Stage 6b). Baseline before this stage was 0/10 answers.
+
+## What is provisional, and what replaces it
+
+`answer()` returns the file the winning value was read out of as its **only**
+citation. That is right for a single-document question and wrong for q9, which
+needs two files. It ships because a citation set is scored as an exact set, so
+one correct citation and an empty one score identically on a two-file question —
+the provisional version can only lose where the question was already lost, and
+wins outright on the single-document ones.
+
+**Stage 6b must replace it.** The necessity judgement ("would removing this file
+make the answer impossible"), the multi-hop chain, and the refusal rule are one
+piece of reasoning and belong together.
+
+## What is still not verified
+
+- **Nothing has run on a GPU.** Every measurement is CPU.
+- The vision path still reports `vision_unavailable`, so q7 and q8 refuse-shape
+  but cannot be answered.
+- No threshold exists anywhere in extraction: it always returns its best
+  candidate when one exists. Whether that is right for the refusal question is
+  Stage 6b's to decide, and q10 is the evidence that it currently is not.
+
+---
+
+# Stage 6b, part 1 — the citation set
+
+**Status: complete and measured.** `answer()` no longer returns the provisional
+citation. It returns the set of files that were **necessary**, and it gets q9 —
+the two-file question — right for the first time. Part 2, the refusal rule, is
+still open and is written up at the end of this section.
+
+## Files
+
+| File | Change |
+|---|---|
+| `starter/app/answering/citations.py` | new — `cited_paths`, `_uses_a_key`, `_keys_around`, `_forms` |
+| `starter/app/app.py` | `answer()` calls `cited_paths(winner, query, index.chunks)`; new `_report_citations`; `cited_paths` added to the `answering` import |
+| `starter/app/answering/__init__.py` | `cited_paths` re-exported; docstring gains a fifth step and loses the "does not decide citations" caveat |
+| `tests/test_answering_citations.py` | new — 14 tests |
+| `tests/test_import_graph.py` | `answering.citations` added to the parametrise list |
+
+## The rule
+
+The contract does not ask which files the answer was read out of. It asks which
+files were **necessary to produce it**, and it scores the answer as an exact set,
+so a citation too many costs exactly what a citation too few costs. The rule is
+therefore the definition itself:
+
+> A file is necessary when removing it would make the answer impossible.
+
+For the seven single-document questions that is the winner's file and nothing
+else, and no search is needed to say so. The multi-hop question is where the work
+is:
+
+* the log records the incident and names the ticket it was logged against;
+* the bug database maps that ticket to the release that closed it.
+
+The value lives in the database. The database alone does not say *which row* the
+question is about, and the question names neither the ticket nor the release.
+What identifies the row is its key, and the log supplies it — so the log is
+load-bearing despite holding no part of the answer.
+
+Four restrictions, each measured against the alternative:
+
+1. **Only identifiers and codes can be keys.** A number names no particular
+   thing. Measured: the log line holding `E7731` also says "clocks reduced to
+   60%", and `60` occurs in `engineering/ingest_service.py` and again in the
+   roadmap, so letting numbers bridge cites three files for a question answerable
+   from one.
+2. **Keys match by joined spelling, never by fragment.** `ORR-1847` tokenises to
+   `orr`, `1847`, `orr1847`; matching on `orr` matches every `ORR-FAN-*`,
+   `ORR-HSK-*` and `ORR-CBL-*` part number in the spreadsheet.
+3. **The search is over the whole corpus, not the retrieved chunks.** Measured
+   below; this is the difference between 6/10 and 7/10.
+4. **A file that merely names the key is not necessary.** The bridging chunk must
+   also account for at least one of the question's own words.
+
+## Measured: corpus-wide search, not retrieved-only
+
+| Key search | Citation sets exact |
+|---|---|
+| over the retrieved chunks | 6/10 |
+| over the whole corpus | **7/10** |
+
+The question it gains is q9, and the reason is not a matter of taste: the log
+line naming the ticket is **not** among the ten chunks that question retrieves.
+A rule that looked only at what retrieval happened to fetch names one file of the
+two that are necessary, and an exact-set score gives that zero either way.
+
+## Measured: keys from the whole file, not the winning chunk
+
+| Key gathering | Citation sets exact |
+|---|---|
+| keys from the winner's own chunk only | 6/10 |
+| keys from every chunk of the winner's file presenting the value | **7/10** |
+
+This one was found by reading the q9 diagnostic rather than by reasoning, and the
+finding is uncomfortable enough to record plainly. q9's answer is `4.3.2` and the
+extractor reaches it through the **decoy** row — `ORR-1904`, whose *summary*
+mentions `4.3.2` while its `fixed_in` field is empty — because that row's prose
+accounts for three of the question's words and the real row's fields account for
+one. Both rows present the same value, so both contribute keys, and the
+`ORR-1847` that makes the log necessary comes from the row the extractor did not
+pick. Reading only the winning chunk loses the bridge.
+
+Two things follow, and they should not be blurred together:
+
+- the citation set is right, for a reason the docstrings now state;
+- **q9's answer is right by coincidence.** A near-miss row that named a different
+  version would have made the answer wrong, and nothing in the citation rule
+  would have caught it. That is an extraction fragility, not a citation one, and
+  it is the "comments naming old values next to the real one" hazard landing on a
+  case where the decoy happens to name the *same* value.
+
+## Two defects the tests caught
+
+**A test asserting the right answer for the wrong reason.** The first version of
+`test_the_value_is_not_its_own_key` passed, and it passed because the other file
+happened not to be about the question — not because the rule under test was
+doing anything. Every case where a file is excluded now has to be excluded by the
+restriction the test names, which is why four of these tests come in pairs that
+differ in exactly one thing.
+
+**A rule with a real hole, found by the same test.** The first version of the
+bridging rule cited any file containing the key. The sample's parts spreadsheet
+carries the ticket number, so it got cited — and it should not be, because naming
+a ticket is not connecting it to anything. That is what added the fourth
+restriction above.
+
+## Results — 10 sample questions, real CLI, one process each
+
+```
+q 1 rc=0  10.0s  ans OK  cites OK  '94'            ['specs/tq40_datasheet_r2.pdf']
+q 2 rc=0   9.6s  ans OK  cites OK  'Q3 FY27'       ['planning/roadmap_fy27.docx']
+q 3 rc=0   9.5s  ans OK  cites OK  'ORR-FAN-2214-B' ['support/rma_parts.xlsx']
+q 4 rc=0   9.4s  ans OK  cites OK  '4.3.2'         ['support/bug_database.csv']
+q 5 rc=0   9.5s  ans OK  cites OK  'E7731'         ['logs/prod_inference_2026-09-02.log']
+q 6 rc=0   9.1s  ans OK  cites OK  '180'           ['engineering/ingest_service.py']
+q 7 rc=0   9.6s  ans NO  cites NO  'E7731'         ['logs/prod_inference_2026-09-02.log']
+q 8 rc=0   9.7s  ans NO  cites NO  'TQ-40'         ['planning/roadmap_fy27.docx']
+q 9 rc=0   9.1s  ans OK  cites OK  '4.3.2'         ['logs/…log', 'support/bug_database.csv']
+q10 rc=0   9.1s  ans NO  cites NO  '7'             ['support/rma_parts.xlsx']
+```
+
+**Answer correct 7/10, citation set exact 7/10.** q1–q6 and q9 are exact. Per
+question 9.1–10.0 s against a 30 s budget; the citation rule itself costs 0.9 s
+for all ten questions including model load.
+
+Full suite **539 passed** (524 before, +14 citations tests, +1 import-graph row).
+
+The three failures are exactly the three known gaps, and no others: q7 and q8 are
+the image questions (Stage 7), q10 is the refusal question (Stage 6b part 2).
+
+## What is still not verified
+
+- **Nothing has run on a GPU.** Every measurement is CPU.
+- The refusal rule does not exist, so q10 still produces a confident wrong answer
+  rather than a refusal.
+- The citation rule has never been exercised by a corpus with a **superseded file
+  that also bridges**. Whether a withdrawn revision should be able to make itself
+  necessary is unresolved, and the sample corpus does not ask.
+- The bridging rule assumes the question shares at least one word with the
+  passage that connects it to the key. True on q9 (`incident`) and plausible in
+  general — the bridge exists to connect the question's subject to the key — but
+  unmeasured beyond one example.
+
+## Next step
+
+Stage 6b part 2 — the refusal rule, which is the last piece standing between q10
+and a correct answer. It is flagged in advance as the weakest part of the system:
+every structural rule tried so far either still answers q10 wrongly or needs a
+rarity threshold fitted to a single negative example.
+
+---
+
+# Stage 6b, part 2 — refusal
+
+**Status: complete and measured.** q10 is now refused correctly, and the rule
+touches nothing else. Stage 6b is closed.
+
+## Files
+
+| File | Change |
+|---|---|
+| `starter/app/answering/refusal.py` | new — `refusal`, `_field_label`, `_label_ending_at`, `_content_forms` |
+| `starter/app/answering/shapes.py` | new `term_forms` — the joined-form helper, promoted out of `citations.py` so both rules share one normalisation |
+| `starter/app/answering/citations.py` | uses the shared `term_forms` rather than its own copy |
+| `starter/app/answering/__init__.py` | `refusal` re-exported; docstring gains a sixth step |
+| `starter/app/app.py` | `answer()` calls `refusal()` before computing citations; returns `"", [], 0.0` on a refusal |
+| `tests/test_answering_refusal.py` | new — 10 tests |
+| `tests/test_import_graph.py` | `answering.refusal` added to the parametrise list |
+
+## What the question actually is
+
+q10 asks for the unit price of the TQ-40. The price is real and it is in the
+corpus — inside `supplier_agreement_ENCRYPTED.pdf`, which cannot be opened, so it
+is not a source. Correct behaviour is an empty answer with no citations, and the
+sample's own note is blunt about why: a submission returning the real number has
+either cracked the file or hallucinated.
+
+That makes refusal the one rule in the system with an **asymmetric cost**.
+Refusing an answerable question and answering it wrongly score identically, so
+the rule gains nothing from caution in the abstract — but it can only ever *gain*
+on genuinely unanswerable questions, while every false refusal spends a point that
+was otherwise won. One negative example, nine positives.
+
+## Three signals measured and refuted
+
+**Confidence — the signal is not weak, it is backwards.**
+
+| Question | Confidence | Outcome |
+|---|---|---|
+| q3 (part number) | 1.00 | correct |
+| q2, q4 | 0.67 | correct |
+| **q10 (must refuse)** | **0.60** | — |
+| q1 | 0.60 | correct |
+| q5, q6 | 0.50 | correct |
+| **q9 (two-hop)** | **0.27** | correct |
+| q7, q8 | 0.00 | vision pending |
+
+q10 scores third-highest of the ten and the correctly-answered two-hop question
+scores second-lowest. **Any threshold that refuses q10 also refuses q9, q1, q5,
+q6, q7 and q8** — seven questions to catch one.
+
+**Absence of the question's subject from the readable corpus.** The word `price`
+never appears in it, which looks decisive until the same test runs on the
+questions that *are* answered: q9 has four content words absent (`log`, `shows`,
+`underlying`, `defect`), q7 has three, q8 has three, q10 has **one**. Paraphrase
+is normal here, so absence of a word is not absence of a subject.
+
+**Rarity of the matched terms.** This one *does* separate the ten — every
+answered question matches a term occurring in ≤3 chunks, q10's rarest match occurs
+in 5 — but the margin is one chunk, calibrated on a single negative example, and
+it is a statistic rather than a fact about the text. Rejected on those grounds: on
+a larger corpus the document-frequency distribution moves and the threshold would
+start silently refusing answerable questions.
+
+## The rule that survived
+
+The refusal question's winner is `lead_time_days=7`. The corpus does not merely
+*fail to contain* a price — it **states** that this value is a lead time. A value
+the corpus explicitly labels as something else cannot be the thing asked for:
+
+> Refuse when the winning value is presented as a field's value, and the field's
+> name shares no word with the question.
+
+No fitted constant: the test is "does this field name share a word with the
+question", which is a structural fact about the text. Measured, it fires on four
+of the ten — three answered correctly (`part_number`, `fixed_in`,
+`DEFAULT_BATCH_TIMEOUT_S`, each matching its question's own words) and q10 — and
+is **silent on the other six**, including both image questions. Silence is the
+point: it can only refuse a value the corpus has labelled as being something
+else, so it never refuses on a hunch.
+
+## What it deliberately does not do
+
+**It does not treat a colon as a field separator.** `ERROR E7731: thermal throttle
+engaged` would give the value the field name `ERROR` under such a rule, and
+`ERROR` shares no word with a question about an error code — so a colon-accepting
+rule would refuse q5, a question the corpus answers plainly. Only `=` identifies a
+field here, and a value with no label gets no verdict.
+
+**It abstains whenever it cannot prove a mismatch:** unknown chunk, value not
+found in it, no `=` before the value, a question with no content words, or a field
+name made entirely of stopwords. Every one of those is a test.
+
+## Where it could be wrong
+
+The rule assumes field names are written in words a question would also use.
+Measured, all **15 distinct field names** in the readable corpus are —
+`fixed_in`, `unit_cost_usd`, `lead_time_days`, `part_number`, `compatible_with`,
+none cryptic. A corpus using `pn` for part number would make a correct answer
+unreachable. That is the risk this rule takes, stated plainly because it is the
+one that cannot be measured here.
+
+## Results — 10 sample questions, real CLI, one process each
+
+```
+q 1   7.3s  ans OK  cites OK  '94'             ['specs/tq40_datasheet_r2.pdf']
+q 2   7.4s  ans OK  cites OK  'Q3 FY27'        ['planning/roadmap_fy27.docx']
+q 3   7.6s  ans OK  cites OK  'ORR-FAN-2214-B' ['support/rma_parts.xlsx']
+q 4   7.5s  ans OK  cites OK  '4.3.2'          ['support/bug_database.csv']
+q 5   7.7s  ans OK  cites OK  'E7731'          ['logs/prod_inference_2026-09-02.log']
+q 6   7.5s  ans OK  cites OK  '180'            ['engineering/ingest_service.py']
+q 7   7.9s  ans NO  cites NO  'E7731'
+q 8   8.1s  ans NO  cites NO  'TQ-40'
+q 9   7.5s  ans OK  cites OK  '4.3.2'          ['logs/…log', 'support/bug_database.csv']
+q10   7.5s  ans OK  cites OK  ''               []
+```
+
+**Answer correct 8/10, citation set exact 8/10.** The refusal diagnostic fires on
+q10 and on nothing else. Full suite **549 passed**. Per question 7.3–8.1 s against
+a 30 s budget.
+
+Every remaining failure is now the *vision* gap: q7 and q8 are the two image
+questions, and no amount of retrieval or answering work can reach them.
+
+## What is still not verified
+
+- **Nothing has run on a GPU.** Every measurement is CPU.
+- The refusal rule has never met a question whose answer genuinely *is* absent
+  rather than sitting in an unreadable file. The corpus hazard list does not
+  promise such a question exists; q10 is not one.
+- The refusal rule's one identified failure mode — a cryptic field name — is
+  unmeasured, because this corpus has no cryptic field names.
+- Stage 6's answer and citation layers have never been run against a corpus
+  containing a superseded file that also bridges, or near-miss rows at a scale the
+  graded corpus is described as having.
+
+## Next step
+
+Stage 7 — vision support, for q7 (`specs/backplane_pinout.png`) and q8
+(`support/asset_label.jpg`). The ingestion path already reports
+`vision_unavailable` for both rather than inventing text, so rule 8 holds; what is
+missing is the reader itself.

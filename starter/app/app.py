@@ -76,6 +76,8 @@ import sys
 import time
 from pathlib import Path
 
+from answering import AnswerShape, Extraction, cited_paths, extract, refusal
+from answering.supersession import superseded_paths
 from chunking import chunks_for_all
 from chunkstore import (
     ChunkIndex,
@@ -92,6 +94,7 @@ from ingestion import walker
 from ingestion.readers import read_file
 from models import ReadStatus
 from retrieval import RetrievedChunk, Retriever
+from retrieval.hybrid import HybridRetriever, HybridUnavailable, describe_sources
 from retrieval.keyword import KeywordRetriever
 from retrieval.vector import VectorRetriever, VectorUnavailable
 
@@ -130,13 +133,10 @@ def index(corpus: Path) -> None:
     except EmbeddingError as exc:
         # Degraded, not raised -- and this mirrors what answer() already does.
         #
-        # The backend's contract changed with the real model: it used to answer
-        # "there is no model here" by returning None, and now answers "the model
-        # could not start" by raising. A caller that was written for the old
-        # contract crashes on the new one, which is what this catch exists to
-        # stop -- the index pass is the one that has to survive it, because an
-        # index built lexical-only still answers most questions, whereas no
-        # index at all refuses every one of them.
+        # A backend that cannot start is one component's fault, and letting it
+        # abort the whole pass would leave no index at all, so all ten questions
+        # would refuse and the submission would score nothing. Continuing
+        # lexical-only produces a partial system instead of none.
         #
         # The failure is printed rather than swallowed, which is what keeps this
         # from being the silent-degradation shape this project keeps meeting: a
@@ -221,37 +221,145 @@ def answer(corpus: Path, query: str) -> tuple[str, list[str], float]:
         print(f"mc3: cannot use the index: {exc}", file=sys.stderr)
         return "", [], 0.0
 
-    # Both retrievers run, and both are reported. Which of them should decide
-    # the answer -- or how to combine them -- is Stage 5's question, and picking
-    # a winner now would be a claim this stage has not earned. Running both also
-    # means the vector path is exercised by every real query rather than only by
-    # its unit tests, which is where a provider mismatch or a stale index would
-    # actually show up.
-    for name, retriever in _retrievers_for(index):
-        _report_retrieval(name, query, retriever.search(query))
+    # One fused ranking is what retrieval now produces. Until Stage 5 the two
+    # halves were run and reported side by side, because combining them was an
+    # open question and picking a winner early would have been a claim this
+    # project had not earned. The measurement that settled it is in Stage 5's
+    # notes: the halves disagree on exactly one sample question, and the
+    # disagreement is a dead heat under fusion, so the fused order is the honest
+    # answer and the tie is left for Stage 6 to break by rule.
+    try:
+        retriever = _retriever_for(index)
+    except HybridUnavailable as exc:
+        print(f"mc3: no retriever available: {exc}", file=sys.stderr)
+        return "", [], 0.0
 
-    # Answer extraction arrives in Stage 6. Retrieval now runs for real and its
-    # output is reported, but nothing here yet turns a chunk into a value, so
-    # the honest response is still a refusal.
-    return "", [], 0.0
+    results = retriever.search(query)
+    _report_retrieval(retriever, query, results)
+
+    # Supersession is judged over the WHOLE corpus, not over this result list.
+    # The verdict for one file can rest on text held in another -- r2 says what
+    # it replaced -- and a set computed once is a set every question agrees on.
+    superseded = superseded_paths(index.chunks)
+    extraction = extract(results, query, superseded)
+    _report_extraction(extraction, superseded)
+
+    if extraction.winner is None:
+        # No candidate value anywhere in the retrieved chunks. For a question
+        # whose evidence is a file that could not be read, this is the correct
+        # outcome rather than a failure, and refusing is what the contract asks
+        # for -- an empty answer with an empty citation list.
+        return "", [], 0.0
+
+    winner = extraction.winner
+
+    # Refusal comes before citations, because a question the readable corpus does
+    # not answer is empty on *both* counts: no answer and no citations. Deciding
+    # it here keeps the two consistent, and it is deliberately the narrowest rule
+    # in the system -- see `answering.refusal` for the signals that were measured
+    # and rejected before this one, including the one that scored backwards.
+    reason = refusal(winner, query, index.chunks)
+    if reason is not None:
+        print(f"  refusing: {reason}", file=sys.stderr)
+        return "", [], 0.0
+
+    # Necessity, not provenance: which files the answer could not have been
+    # produced without. That is the contract's question and it is a different
+    # one from "which file was the value read out of" -- seven of the ten sample
+    # questions have the same answer either way, and the eighth needs a second
+    # file that the value never appears in.
+    #
+    # The whole corpus is passed, not `results`, and the distinction is measured
+    # rather than stylistic: on the sample's two-hop question the chunk that
+    # supplies the key is not among the ten chunks retrieval returns, so a rule
+    # that searched only what was retrieved would name one file of the two that
+    # are necessary -- and citation sets are scored exactly, so that costs the
+    # same as naming none.
+    citations = cited_paths(winner, query, index.chunks)
+    _report_citations(citations, winner.rel_path)
+
+    return extraction.answer, list(citations), extraction.confidence
 
 
-def _retrievers_for(index: ChunkIndex) -> list[tuple[str, Retriever]]:
-    """Every retriever this index and environment can support, and why not others.
+def _report_citations(citations: tuple[str, ...], winner_path: str) -> None:
+    """Print the citation set, and which of it retrieval had nothing to do with.
 
-    Each unavailable retriever is reported rather than passed over: an index
-    built without a backend, or one whose backend disagrees with what is
-    configured now, still answers questions -- but with the vector half of the
-    system silently missing, which is invisible in the graded output and would
-    otherwise look like the vector stage simply not helping.
+    A citation the winner's own file does not cover came from somewhere the
+    ranking did not look, and that is the single most surprising thing this
+    stage does -- so it is named rather than left to be inferred from a path
+    that appears in the output with no visible origin.
     """
-    retrievers: list[tuple[str, Retriever]] = [("keyword", KeywordRetriever(index))]
+    extra = [path for path in citations if path != winner_path]
+    print(f"  citations {list(citations)}", file=sys.stderr)
+    if extra:
+        print(f"  also necessary (not the winner's file): {extra}", file=sys.stderr)
+
+
+
+def _report_extraction(extraction: Extraction, superseded: frozenset[str]) -> None:
+    """Print what was extracted, and what it beat, to stderr.
+
+    The winning candidate alone would be a poor diagnostic: knowing that
+    ``94`` won says nothing about whether it won by a mile or by a hair, and the
+    interesting failures are the near-misses. So the fields that decided it are
+    printed rather than just the value -- which is how a wrong answer is traced
+    to the specific signal that outranked the right one, instead of being
+    re-derived by hand.
+
+    The corpus-wide supersession verdict is printed too, because it is invisible
+    in the graded JSON whenever it agrees with retrieval, and it is the signal
+    that decides the question when it does not.
+    """
+    if extraction.winner is None:
+        print(
+            f"  no candidate value among {extraction.considered} candidates "
+            f"(shapes wanted: {_shapes(extraction.wanted_shapes)})",
+            file=sys.stderr,
+        )
+        return
+
+    winner = extraction.winner
+    print(
+        f"  answer {winner.value!r} from {winner.rel_path} [{winner.location}] "
+        f"shape={winner.shape.value} "
+        f"superseded={winner.superseded} "
+        f"after_equals={winner.follows_equals} "
+        f"context={' '.join(winner.context_terms) or '-'} "
+        f"of {extraction.considered} candidates "
+        f"(shapes wanted: {_shapes(extraction.wanted_shapes)})",
+        file=sys.stderr,
+    )
+    if superseded:
+        # A count of paths, not of chunks -- the two are different quantities
+        # and printing them side by side would invite reading one as the other.
+        print(
+            f"  superseded in the corpus: {', '.join(sorted(superseded))}",
+            file=sys.stderr,
+        )
+
+
+def _shapes(shapes: tuple[AnswerShape, ...]) -> str:
+    """The shape names the question was read as wanting, for the diagnostics."""
+    return ", ".join(shape.value for shape in shapes) or "none"
+
+
+def _retriever_for(index: ChunkIndex) -> HybridRetriever:
+    """Every retriever this index and environment can support, fused into one.
+
+    Keyword is always available. The vector half is added only if a backend is
+    configured, it matches the one that built the index, and the index actually
+    holds vectors -- and when it is missing that is *reported*, because a
+    lexical-only hybrid answers every question perfectly plausibly while having
+    lost the recall the second retriever existed to provide. Nothing in the
+    graded JSON would show it.
+    """
+    components: list[tuple[str, Retriever]] = [("keyword", KeywordRetriever(index))]
 
     try:
         provider = provider_from_environment()
     except EmbeddingError as exc:
         print(f"  vectors unavailable: {exc}", file=sys.stderr)
-        return retrievers
+        provider = None
 
     if provider is None:
         print(
@@ -259,29 +367,37 @@ def _retrievers_for(index: ChunkIndex) -> list[tuple[str, Retriever]]:
             "index is lexical-only",
             file=sys.stderr,
         )
-        return retrievers
+    else:
+        try:
+            components.append(("vector", VectorRetriever(index, provider)))
+        except VectorUnavailable as exc:
+            print(f"  vectors unavailable: {exc}", file=sys.stderr)
 
-    try:
-        retrievers.append(("vector", VectorRetriever(index, provider)))
-    except VectorUnavailable as exc:
-        print(f"  vectors unavailable: {exc}", file=sys.stderr)
-
-    return retrievers
+    hybrid = HybridRetriever(components)
+    print(f"  fusing: {'+'.join(hybrid.components)} (RRF k={hybrid.rrf_k})", file=sys.stderr)
+    return hybrid
 
 
-def _report_retrieval(name: str, query: str, results: list[RetrievedChunk]) -> None:
-    """Print what one retriever found, to stderr.
+def _report_retrieval(
+    retriever: Retriever, query: str, results: list[RetrievedChunk]
+) -> None:
+    """Print what the fused retriever found, to stderr.
 
     The one window into a stage whose output never reaches the graded JSON:
     ``answer`` is still a refusal, so without this a retrieval regression would
     be invisible until Stage 6 and would then look like an answering bug.
+
+    Each line carries its origins -- which retrievers wanted this chunk and
+    where each ranked it -- because a fused score is on a scale of its own and
+    cannot be read without knowing whether it came from one strong vote or two
+    weak ones.
     """
-    print(f"{name}: {len(results)} chunks for {query!r}", file=sys.stderr)
+    print(f"{len(results)} chunks for {query!r}", file=sys.stderr)
     for result in results:
         terms = ", ".join(result.matched_terms) or "-"
         print(
             f"  {result.rank:>2}. {result.rel_path} [{result.location}] "
-            f"score={result.score:.4f} matched={terms}",
+            f"score={result.score:.4f} via={describe_sources(result)} matched={terms}",
             file=sys.stderr,
         )
 
