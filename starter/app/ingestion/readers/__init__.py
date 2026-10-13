@@ -14,11 +14,16 @@ from __future__ import annotations
 
 from models import DiscoveredFile, MediaType, ReadResult, ReadStatus
 
-from . import delimited, docx, pdf, text, xlsx
+from . import delimited, docx, image, pdf, text, xlsx
 
 #: Which reader handles which media type. A type absent from this table is
-#: reported ``UNSUPPORTED`` rather than guessed at -- the honest answer for an
-#: image, whose text does not exist until the vision path can produce it.
+#: reported ``UNSUPPORTED`` rather than guessed at -- the honest answer for a
+#: format nothing here understands, such as the corpus's unknown binary.
+#:
+#: Images are in the table precisely because they are *not* expected to be
+#: understood here. Leaving them out would make an image indistinguishable
+#: from an unknown binary in the output; the image reader reports
+#: ``VISION_UNAVAILABLE``, which names the gap instead of hiding it.
 _READERS = {
     MediaType.TEXT: text.read,
     MediaType.LOG: text.read,
@@ -27,6 +32,8 @@ _READERS = {
     MediaType.DOCX: docx.read,
     MediaType.XLSX: xlsx.read,
     MediaType.PDF: pdf.read,
+    MediaType.PNG: image.read,
+    MediaType.JPG: image.read,
 }
 
 

@@ -14,7 +14,7 @@ Living progress log. Updated at the end of every stage. Durable rules live in
 | 0 | Inspect and plan | ✅ **complete** |
 | 1a | Corpus discovery and format detection | ✅ **complete** |
 | 1b | Document readers (pdf, docx, xlsx, csv, text, code) | ✅ **complete** |
-| 1c | Image reader interface + normalised chunks | ⬜ not started |
+| 1c | Image reader interface + normalised chunks | ✅ **complete** |
 | 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ⬜ not started |
 | 3 | Keyword retrieval | ⬜ not started |
 | 4 | Vector retrieval | ⬜ not started |
@@ -457,3 +457,187 @@ Extraction must not damage the near-misses that make the corpus hard:
 interface images will satisfy (so rule 8 holds: the vision path reports itself
 as unavailable rather than inventing text), and convert `TextSpan`s into the
 retrieval chunks that Stage 2 will index.
+
+---
+
+## Stage 1c — Image reader interface and normalised chunks ✅
+
+**Goal:** two things Stage 2 depends on. First, make the image gap *visible and
+named* rather than an absence (rule 8). Second, provide the one normalisation
+the contract defines and turn read results into the chunks the index will store.
+
+Neither part does any retrieval. This stage decides what retrieval will be able
+to see.
+
+### Files created
+
+| File | Responsibility |
+|---|---|
+| `starter/app/normalisation.py` | **The** normalisation — `normalise()` and `contains()`. Used everywhere, defined once. |
+| `starter/app/chunking.py` | `ReadResult` → `Chunk`s; content filtering and splitting |
+| `starter/app/ingestion/readers/image.py` | PNG/JPEG header parsing; reports `VISION_UNAVAILABLE` |
+| `tests/test_normalisation.py` | 25 tests |
+| `tests/test_chunking.py` | 25 tests |
+| `tests/test_readers_image.py` | 23 tests |
+
+### Files modified
+
+| File | Change |
+|---|---|
+| `starter/app/models.py` | Added `ReadStatus.VISION_UNAVAILABLE` and `Chunk` |
+| `starter/app/config.py` | Added `MAX_IMAGE_HEADER_BYTES`, `MAX_CHUNK_CHARS`, `CHUNK_BREAK_LOOKBACK` |
+| `starter/app/ingestion/readers/__init__.py` | Registered the image reader for PNG and JPG |
+| `tests/document_fixtures.py` | Added `png_bytes`, `jpeg_bytes` |
+| `tests/test_readers_common.py`, `tests/test_readers_real_corpus.py` | Updated for the new status |
+| `tests/test_import_graph.py` | Guard widened to the new top-level modules and the readers package |
+
+### Key design decisions
+
+1. **A recognised image is `VISION_UNAVAILABLE`, not `UNSUPPORTED`.** An unknown
+   `.dat` and a `.png` are both unreadable today, but only one is a gap we are
+   *required* to close. Collapsing them would let that obligation hide inside a
+   general-purpose failure state: "three unsupported files" reads as a corpus
+   of odd formats, while "one unknown binary, two images with no vision
+   backend" names the unmet requirement — and keeps naming it after Stage 7
+   lands, when absence and presence must stay distinguishable.
+
+2. **The image reader reports what it *did* establish.** It parses the header
+   and states the real format and pixel dimensions. "A valid 1000x560 PNG we
+   cannot read" is a different finding from "this file claims to be a PNG and
+   is not", and only the first is a vision gap — the second is `UNREADABLE` and
+   blames nothing on the missing model.
+
+3. **Image metadata is never emitted as spans.** Dimensions go in `detail`
+   only. `1400` is a fact about a file, not something the corpus says; putting
+   it in a span would let an unrelated question match that file and cite it,
+   and every extra citation scores zero. **A file may be cited only once we
+   have read what it says.** The test asserts `spans == ()` on every path.
+
+4. **No vision backend interface yet.** Stage 7 knows which model, which
+   resolutions, whether a caption suffices. An interface designed without those
+   answers would be replaced rather than implemented. The single seam is marked
+   in the code.
+
+5. **One normalisation, in one place.** `AGENTS.md` requires it and the reason
+   is failure mode, not tidiness: two implementations that drift produce a
+   system that matches on one path and misses on another, and both paths look
+   correct read in isolation. `contains()` exists so callers cannot normalise
+   one side and forget the other — a half-normalised comparison looks almost
+   right.
+
+6. **Characters are deleted, not replaced.** `4.3.2`, `4-3-2` and `432` all
+   normalise to `432`, as the contract specifies. This is why normalisation is
+   a *comparison* form and never a display form: an answer reported to the
+   grader is always the value exactly as the corpus spells it, which is why
+   `Chunk.text` is stored verbatim and `Chunk.normalised` is derived.
+
+7. **The step order inside `normalise` is load-bearing**, in two places:
+   - Degree signs are deleted **before** NFKC, because NFKC folds `º` to the
+     letter `o` — deleting first leaves nothing to fold.
+   - Separators are deleted **after** NFKC, so a full-width `．` becomes `.`
+     first and is then removed along with the ASCII form.
+
+8. **`contains` never matches an empty needle.** Normalisation reduces `---` and
+   `""` to the empty string, and an empty needle is a substring of everything —
+   which would report a value that was never there. This matters most for
+   refusals, where the expected answer is empty by definition.
+
+9. **Chunk content is tested on the normalised form.** A span of `-----`
+   normalises to nothing and is not content; `4.3.2` normalises to `432` and
+   is. Testing the raw text would keep the first and, in another format, might
+   drop the second.
+
+10. **`chunks_for` takes a `ReadResult`, not spans.** `is_usable` is the single
+    gate for "may this file be treated as evidence"; routing through it means
+    an encrypted or unreadable file cannot reach the index because a caller
+    forgot to check. A test asserts that a failure *carrying* spans still
+    yields nothing.
+
+11. **Splitting trims to a space when one is near, and hard-slices when not.**
+    The lookback is bounded so a minified file does not cause a scan of the
+    whole prefix for a break that is not there. Each piece is labelled
+    `part N of M`, or a diagnostic pointing at "line 42" would be ambiguous
+    about which part held the value.
+
+### Commands actually run
+
+```bash
+/home/alfin/venvs/mc3/bin/python -I -m pytest tests/ -q
+# walker -> read_file -> chunks_for over mc3-corpus, printing status/chunks/spans
+# independent dimension check with file(1) and a second standalone parser
+```
+
+### Test results
+
+```
+243 passed in 12.13s
+```
+
+### A third real bug, caught by the JPEG fixture
+
+The `SOF` parser read height and width from the wrong offsets, because I placed
+them as offsets into the *payload* while the segment walk leaves the cursor at
+the **length** field:
+
+```
++0 .. +1   length (where the cursor is)
++2         precision
++3 .. +4   height     <- was read at +5
++5 .. +6   width      <- was read at +7
++7         component count
+```
+
+The symptom was a 1200x800 image reported as `768x1200` — a swapped pair of
+plausible numbers, no exception, no empty result. Exactly the silent-degradation
+shape as the two Stage 1b bugs. Fixed to `+3`/`+5`, with the table written into
+the code so the next reader does not have to re-derive it.
+
+Verified independently rather than against my own fixture, using `file(1)` and a
+second standalone parser on the real corpus images:
+
+```
+specs/backplane_pinout.png: PNG image data, 1000 x 560, 8-bit/color RGB
+support/asset_label.jpg:    JPEG image data, ... baseline, precision 8, 760x440
+```
+
+The reader reports `1000x560` and `760x440`. A real JPEG from a real producer
+now parses correctly — evidence that does not depend on the fixture I wrote.
+
+### The pipeline over the real corpus
+
+| Status | Chunks | Spans | File |
+|---|---:|---:|---|
+| ok | 11 | 11 | `engineering/ingest_service.py` |
+| ok | 6 | 6 | `engineering/meridian_release_notes.txt` |
+| ok | 7 | 7 | `logs/prod_inference_2026-09-02.log` |
+| ok | 8 | 8 | `planning/roadmap_fy27.docx` |
+| vision_unavailable | 0 | 0 | `specs/backplane_pinout.png` → *PNG image, 1000x560 pixels* |
+| ok | 8 | 8 | `specs/tq40_datasheet_r1_WITHDRAWN.pdf` |
+| ok | 13 | 13 | `specs/tq40_datasheet_r2.pdf` |
+| vision_unavailable | 0 | 0 | `support/asset_label.jpg` → *JPG image, 760x440 pixels* |
+| ok | 6 | 6 | `support/bug_database.csv` |
+| ok | 6 | 6 | `support/rma_parts.xlsx` |
+| ok | 2 | 2 | `vendor/internal_audit.txt` |
+| encrypted | 0 | 0 | `vendor/supplier_agreement_ENCRYPTED.pdf` |
+| unsupported | 0 | 0 | `vendor/telemetry_capture.dat` |
+
+67 spans, 67 chunks — no span was dropped by the content filter, which is the
+expected result for a corpus of real documents and confirms the filter is not
+over-eager. The three unreadable files contribute nothing to the index by three
+distinct, separately-reported routes.
+
+### Known limitations
+
+- **Image dimensions are all we have.** No OCR, no captioning. The two sample
+  image questions (7 and 8) remain unanswerable, which is correct and asserted.
+- **The chunker preserves reader boundaries.** It does not merge a sentence
+  split across two PDF lines, nor split a table into one chunk per row-set. If
+  retrieval recall proves weak in Stage 5, this is the first place to revisit.
+- Carried from Stage 1b: DOCX headers/footers, XLSX date serials, PDF form
+  fields and scanned pages.
+
+### Next step
+
+**Stage 2 — persistent indexing.** A chunk store written by `--index` and read
+by each `--query` process, plus the embedding interface with a fake provider, so
+the index can be built and exercised with no model and no network.

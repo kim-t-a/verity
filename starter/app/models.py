@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+from normalisation import normalise
+
 
 class MediaType(StrEnum):
     """The formats the challenge guarantees, plus catch-alls.
@@ -150,7 +152,23 @@ class ReadStatus(StrEnum):
     """The format was recognised but the bytes could not be parsed."""
 
     UNSUPPORTED = "unsupported"
-    """No reader exists for this media type (images, until the vision path is ready)."""
+    """Nothing here knows this format. The honest answer for an unknown binary."""
+
+    VISION_UNAVAILABLE = "vision_unavailable"
+    """A recognised image, which this build has no way to read.
+
+    Kept separate from ``UNSUPPORTED`` on purpose. An unknown ``.dat`` and a
+    ``.png`` are both unreadable right now, but they are different findings,
+    and only one of them is a gap we are required to close: the challenge
+    guarantees images and mandates handling them.
+
+    Collapsing the two would let that obligation hide. A run reporting "three
+    unsupported files" looks like a corpus of odd formats; the same run
+    reporting "one unknown binary, two images with no vision backend" states
+    exactly which requirement is unmet -- and when the vision path lands, its
+    absence or presence stays visible in the output rather than blending into
+    a general-purpose failure state.
+    """
 
 
 @dataclass(frozen=True)
@@ -242,3 +260,58 @@ class ReadResult:
         return cls(
             rel_path=rel_path, media_type=media_type, status=ReadStatus.OK, spans=kept, detail=detail
         )
+
+
+@dataclass(frozen=True)
+class Chunk:
+    """One unit of retrieval: text from one identifiable place in one file.
+
+    A chunk is what the index stores and what a query is matched against. It is
+    deliberately close to a :class:`TextSpan` -- for most formats they are the
+    same thing -- because splitting a document into chunks *is* the retrieval
+    decision, and the provenance that makes a citation defensible is carried
+    here rather than reconstructed later.
+
+    ``rel_path`` is present on every chunk even though it is constant within a
+    file. Retrieval returns chunks from across the whole corpus with nothing
+    else tying them back to their source, and the citation set is built from
+    those results, so the path has to travel with the text.
+    """
+
+    rel_path: str
+    """Corpus-relative path. **This is the citation string.**"""
+
+    media_type: MediaType
+    location: str
+    ordinal: int
+    """Position within the file, for ordering. Only comparable within one file."""
+
+    text: str
+    """The text as extracted. Verbatim -- never normalised, never rewritten.
+
+    Normalisation is a comparison form, and an answer shown to the grader has
+    to be the value as the corpus spells it.
+    """
+
+    @property
+    def normalised(self) -> str:
+        """The comparison form of :attr:`text`.
+
+        Derived rather than stored, so it cannot fall out of step with the text
+        it describes. The cost is one recomputation per access, which is
+        irrelevant at this corpus size; should it ever matter, the value to
+        cache is this one, computed by this one function.
+        """
+        return normalise(self.text)
+
+    @property
+    def has_searchable_content(self) -> bool:
+        """False for punctuation-only spans, which can never match a query.
+
+        Tested on the *normalised* form, not the raw text, because
+        normalisation deletes separators: a rule line of ``-----`` normalises
+        to the empty string and is not content, while ``4.3.2`` normalises to
+        ``432`` and is. Testing the raw text would keep the first and, in a
+        different format, might drop the second.
+        """
+        return any(character.isalnum() for character in self.normalised)

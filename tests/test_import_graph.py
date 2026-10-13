@@ -31,10 +31,15 @@ def test_app_dir_is_on_sys_path() -> None:
     [
         "config",
         "models",
+        "normalisation",
+        "chunking",
         "app",
         "ingestion",
         "ingestion.filetypes",
         "ingestion.walker",
+        "ingestion.readers",
+        "ingestion.readers.image",
+        "ingestion.readers.pdf",
     ],
 )
 def test_module_imports_by_bare_name(module_name: str) -> None:

@@ -64,14 +64,18 @@ class TestCorpusCoverage:
             "engineering/meridian_release_notes.txt": "ok",
             "logs/prod_inference_2026-09-02.log": "ok",
             "planning/roadmap_fy27.docx": "ok",
-            "specs/backplane_pinout.png": "unsupported",
+            "specs/backplane_pinout.png": "vision_unavailable",
             "specs/tq40_datasheet_r1_WITHDRAWN.pdf": "ok",
             "specs/tq40_datasheet_r2.pdf": "ok",
-            "support/asset_label.jpg": "unsupported",
+            "support/asset_label.jpg": "vision_unavailable",
             "support/bug_database.csv": "ok",
             "support/rma_parts.xlsx": "ok",
             "vendor/internal_audit.txt": "ok",
             "vendor/supplier_agreement_ENCRYPTED.pdf": "encrypted",
+            # The only genuinely unknown format in the corpus. It stays
+            # UNSUPPORTED, which is what makes the two image rows above
+            # meaningful: the statuses distinguish "a gap we must close" from
+            # "a file nothing could read".
             "vendor/telemetry_capture.dat": "unsupported",
         }
 
@@ -133,11 +137,15 @@ class TestSampleAnswersAreRecoverable:
 
         If this test ever starts passing, it means text extraction has begun
         inventing content for images -- which would be far worse than failing.
+        So it asserts the specific status rather than merely "not OK": an image
+        that came back ``EMPTY``, or ``UNREADABLE``, would mean something else
+        went wrong and the reason is no longer the one recorded here.
         """
         item = next(q for q in samples if q["n"] == number)
         results = [corpus_reads[rel] for rel in item["expected_citations"]]
 
-        assert all(result.status is ReadStatus.UNSUPPORTED for result in results)
+        assert all(result.status is ReadStatus.VISION_UNAVAILABLE for result in results)
+        assert all(result.spans == () for result in results)
 
     def test_the_refusal_question_has_no_readable_source(self, samples, corpus_reads) -> None:
         """Question 10's answer exists only inside the encrypted file.

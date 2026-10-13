@@ -9,7 +9,7 @@ reader can take the run down, and that the distinction between "read it" and
 from __future__ import annotations
 
 import pytest
-from document_fixtures import docx_bytes, pdf_bytes, xlsx_bytes
+from document_fixtures import docx_bytes, pdf_bytes, png_bytes, xlsx_bytes
 from ingestion.readers import read_file, reader_for
 from models import MediaType, ReadResult, ReadStatus, TextSpan
 
@@ -27,22 +27,24 @@ class TestDispatch:
         ):
             assert reader_for(media_type) is not None, media_type
 
-    def test_images_report_themselves_unsupported_rather_than_silent(
+    def test_images_report_themselves_unreadable_rather_than_silent(
         self, build_corpus
     ) -> None:
         """An image is not skipped quietly; it says it cannot be read yet.
 
-        The rule is that image support must never be silently absent. Reporting
-        ``UNSUPPORTED`` is the honest state of affairs until the vision path
-        exists, and it is visible in the index ledger rather than invisible.
+        The rule is that image support must never be silently absent. The
+        status has to name the *gap* -- a recognised image with no vision
+        backend -- rather than dissolving into the same ``UNSUPPORTED`` an
+        unknown binary gets, because only one of those is a requirement this
+        project has to close.
         """
-        files = build_corpus({"specs/pinout.png": b"\x89PNG\r\n\x1a\n" + b"\x00" * 64})
+        files = build_corpus({"specs/pinout.png": png_bytes()})
 
         result = read_file(files["specs/pinout.png"])
 
-        assert result.status is ReadStatus.UNSUPPORTED
-        assert "png" in result.detail
+        assert result.status is ReadStatus.VISION_UNAVAILABLE
         assert result.is_usable is False
+        assert result.spans == ()
 
     def test_unknown_binary_type_is_unsupported_not_guessed(self, build_corpus) -> None:
         files = build_corpus({"vendor/capture.dat": bytes(range(256)) * 4})

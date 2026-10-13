@@ -62,3 +62,34 @@ MAX_CONTROL_CHARACTER_RATIO = 0.10
 #: How a table cell separator is rendered when a row is flattened into text.
 #: Chosen to be visually unambiguous and unlikely to appear inside a cell.
 CELL_SEPARATOR = " | "
+
+# --- Images -----------------------------------------------------------------
+
+#: How many bytes of an image are read to identify it and find its dimensions.
+#:
+#: Only the header is ever needed, never the pixels, so this stays small. It is
+#: larger than ``PROBE_BYTES`` because a JPEG's frame header is not at a fixed
+#: offset: it comes after whatever metadata segments the producer wrote, and an
+#: embedded colour profile can push it well past 4 KiB.
+MAX_IMAGE_HEADER_BYTES = 64 * 1024
+
+# --- Chunking ---------------------------------------------------------------
+
+#: The largest chunk the index will store.
+#:
+#: A chunk is the unit a query is matched against, and both retrieval methods
+#: degrade on very large ones: a lexical score is diluted by every unrelated
+#: word sharing the chunk, and an embedding compresses the whole thing into one
+#: vector, so a single specific value inside a page of prose stops being
+#: findable. Splitting bounds that damage.
+#:
+#: The value is a little under the token limit of the embedding models we are
+#: considering, so a chunk can be embedded whole without silent truncation.
+MAX_CHUNK_CHARS = 2000
+
+#: How much of the text before the cut is searched for a clean break.
+#:
+#: A chunk split mid-token would store half a value, which can never be matched
+#: and can never be quoted as an answer. Looking back a short distance for a
+#: space costs a little and usually avoids that.
+CHUNK_BREAK_LOOKBACK = 200

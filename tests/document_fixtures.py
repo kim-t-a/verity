@@ -13,6 +13,7 @@ writes to ``mc3-corpus``, which is read-only reference data.
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 from xml.sax.saxutils import escape
 
@@ -232,4 +233,58 @@ def pdf_bytes(
         trailer += b"/Encrypt << /Filter /Standard /R 6 /V 5 /Length 256 >>"
     trailer += b" >>"
     out += b"trailer\n" + trailer + b"\n%%EOF\n"
+    return bytes(out)
+
+
+# --------------------------------------------------------------------------
+# Images
+# --------------------------------------------------------------------------
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_bytes(*, width: int = 1400, height: int = 900) -> bytes:
+    """Build a PNG header with the given dimensions.
+
+    Only the signature and the IHDR chunk are written -- enough for a header
+    probe, and nothing more, because the reader under test never looks past
+    them. The CRC is computed properly so the file is well-formed rather than
+    merely header-shaped.
+    """
+    import zlib
+
+    payload = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    chunk = b"IHDR" + payload
+    crc = struct.pack(">I", zlib.crc32(chunk))
+    return _PNG_SIGNATURE + struct.pack(">I", len(payload)) + chunk + crc
+
+
+def jpeg_bytes(
+    *,
+    width: int = 640,
+    height: int = 480,
+    metadata_bytes: int = 0,
+    frame_kind: int = 0xC0,
+) -> bytes:
+    """Build a JPEG whose frame header follows optional metadata.
+
+    ``metadata_bytes`` pads an APP1 segment ahead of the frame header, which is
+    what a real photo does. A probe that assumes the frame header sits at a
+    fixed offset works on the smallest possible file and fails on every real
+    photograph, so the padding is the point of the parameter.
+
+    ``frame_kind`` selects the marker: ``0xC0`` is baseline, ``0xC2``
+    progressive. Both carry dimensions in the same place.
+    """
+    out = bytearray(b"\xff\xd8")  # SOI
+
+    if metadata_bytes:
+        payload = b"Exif\x00\x00" + bytes(metadata_bytes)
+        out += b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
+
+    # SOF payload: precision, height, width, component count, then 3 bytes per
+    # component. Nine bytes minimum, which is what the reader checks for.
+    frame = struct.pack(">BHHB", 8, height, width, 3) + bytes(9)
+    out += bytes([0xFF, frame_kind]) + struct.pack(">H", len(frame) + 2) + frame
+    out += b"\xff\xd9"  # EOI
     return bytes(out)
