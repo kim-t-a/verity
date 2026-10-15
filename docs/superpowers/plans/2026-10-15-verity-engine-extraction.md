@@ -461,8 +461,14 @@ now would leave the engine unimportable with no task in this plan to repair it.
 
 - [ ] **Step 1: Confirm nothing in the engine imports what you are deleting**
 
-Run: `grep -rn "answering\|^from app\|import app" backend/verity/engine/`
-Expected: no matches. A match means a real dependency survived Task 2 — investigate before deleting. Do **not** add `chunkstore` to this pattern: the engine legitimately imports it, and every such match is expected.
+Run: `grep -rnE '^\s*(from|import)\s+(answering|app)\b' backend/verity/engine/`
+Expected: no matches. A match means a real dependency survived Task 2 — investigate before deleting.
+
+The pattern is anchored to real import statements on purpose. A bare
+`grep -rn "answering"` matches 14 lines, because "answering" is an ordinary
+English word and the engine's docstrings describe *the answering stage* — which
+is a stage of the live pipeline (spec §8), not the deleted module. Do not add
+`chunkstore` to this pattern either: the engine legitimately imports it.
 
 - [ ] **Step 2: Delete**
 

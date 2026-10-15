@@ -601,9 +601,9 @@ SUPERSEDED_PATH_MARKERS = ("WITHDRAWN", "SUPERSEDED", "OBSOLETE", "DEPRECATED")
 #:
 #: Only counted when the document is also *naming itself*, which is what the
 #: first-person forms here encode: "this document is superseded", "do not design
-#: to these numbers". See :mod:`answering.supersession` for how the self-
-#: reference is actually checked -- a bare "superseded" substring is not enough,
-#: and treating it as enough is the trap described above.
+#: to these numbers". The self-reference is checked rather than assumed: a bare
+#: "superseded" substring is not enough, and treating it as enough is the trap
+#: described above.
 SUPERSEDED_TEXT_MARKERS = (
     "IS WITHDRAWN",
     "IS SUPERSEDED",
