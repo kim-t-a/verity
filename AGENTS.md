@@ -1,8 +1,11 @@
 # AGENTS.md — persistent instructions for this repository
 
 This file holds **durable rules**, not progress notes. Progress lives in the
-plan's ledger (`.superpowers/sdd/<plan>/progress.md`). Update this file only
-when a project rule changes.
+implementation plan under `docs/superpowers/plans/` — which is tracked, so it
+survives a fresh clone. Work deliberately left out of a plan goes in that plan's
+`## Deferred` section rather than in anyone's memory; the execution ledger under
+`.superpowers/sdd/` is git-ignored scratch and is not a record. Update this file
+only when a project rule changes.
 
 ## What this project is
 
@@ -76,8 +79,11 @@ ones most likely to be broken by a well-meaning change.
    **security requirement**, not a performance choice: it is what keeps the API
    key off the client.
 8. **Never put a key in the repository or in a conversation.** Keys live in
-   `.env`, which is git-ignored. A key pasted into a chat is a leaked key and
-   must be rotated. `.env.example` documents the variable names only.
+   `.env`, which `.gitignore` excludes — and `backend/tests/test_secrets_are_ignored.py`
+   asserts that exclusion, because a comment is not a guarantee and a key
+   committed once is in the history for good. A key pasted into a chat is a
+   leaked key and must be rotated. Keep an `.env.example` carrying the variable
+   names and no values.
 9. **Never download large model weights or start a large build without asking
    first.**
 10. **Never implement a whole stage in one uncontrolled change.** Small,
@@ -140,6 +146,8 @@ config; run pytest from `backend/`.
 - Tests must be runnable without a network, without the real corpus, and without
   any provider key. Anything that calls a model is behind an interface with a
   fake behind it in tests.
-- One normalisation function, used everywhere (answers, evidence checks,
-  superseded-revision demotion).
+- One normalisation function, `verity.engine.normalisation.normalise`, used
+  everywhere text is compared — span lookup, `Span.normalised`, and OCR
+  detection de-duplication. A second implementation is how "the same text"
+  starts meaning two different things in two places.
 - Run `python3 -I` when executing scripts that read untrusted input.

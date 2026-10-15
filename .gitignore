@@ -18,6 +18,17 @@ venv/
 index/
 output/
 
+# ---- Secrets ----
+# The model provider key lives in .env. `git check-ignore` is the guarantee, not
+# this comment: tests/test_secrets_are_ignored.py asserts these patterns hold,
+# because a key committed once is in the history for good and the only remedy is
+# rotating it. `.env.example` is deliberately NOT ignored -- variable names are
+# shareable, values are not.
+.env
+.env.*
+*.env
+!.env.example
+
 # ---- Model weights ----
 # Weights are COPYed into the image at build time and must never enter git:
 # the image budget is 60 GiB uncompressed and git would be unusable.

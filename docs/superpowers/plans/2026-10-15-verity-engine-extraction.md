@@ -1074,3 +1074,74 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 2. The draft's Review Focus included a speculative filename-safety item that belongs to the upload boundary (Phase 3/4), not the engine. Replaced with the UTF-16 defect below, which is engine-owned and verified.
 3. **UTF-16 text files are discarded, and this is verified.** `"Section 4.2 Termination\nNotice period is 30 days.\n".encode("utf-16")` read through `read_file` returns `ReadStatus.UNREADABLE` with the detail "more than 10% of the decoded bytes are control characters". `TEXT_ENCODINGS` has no UTF-16 entry, and latin-1 maps all 256 byte values, so the file decodes "successfully" into text interleaved with NULs and is rejected afterwards. Task 8 fixes it, with a BOM-detection approach and a regression test that a cp1252 file is unaffected.
 4. The draft's Task 9 move list omitted `sample-questions.json`, `selfcheck.py`, `setup.sh`, `scripts/`, `IMPLEMENTATION_PROGRESS.md` and the starter zip, and missed a root `pytest.ini` whose `testpaths = tests` would point at a directory that no longer exists. Both fixed — the config move is in Task 5, the rest in Task 10.
+
+---
+
+## Deferred
+
+Work this plan deliberately did **not** do. It is recorded here, in a tracked file,
+because the execution ledger under `.superpowers/sdd/` is git-ignored and would not
+survive a fresh clone — a decision recorded only there is a decision that will be
+rediscovered rather than read.
+
+**Blocking the next phase.**
+
+- **The PDF reader's object table is quadratic.** `_load_objects` stores a slice per
+  `N 0 obj` header running to the next `endobj`, so a file declaring 300 objects and
+  closing only the last one makes 300 slices of nearly the whole document (measured:
+  20 MiB held from a 2 MiB input). The fix is to store `(start, end)` offsets and slice
+  at the five call sites that consume the dict. Pinned by a strict `xfail` in
+  `backend/tests/test_readers_pdf_limits.py`. **Prerequisite for Phase 3**, which is the
+  first code that accepts a PDF a user uploaded.
+
+**Not yet planned, in spec order.**
+
+- **Phase 0's token-ceiling measurement** (spec §7) and the NVIDIA key checks:
+  `/v1/models`, `429` vs `402` under load, embedding batching, `input_type` for `embedqa`
+  models. Needs a real key, so it is the first thing the user's key unblocks.
+- **The chunking merge step** (spec §7). Deliberately excluded from this plan: it changes
+  `chunks_for`'s output, and mixing a behaviour change into a refactor destroys the
+  ability to tell a regression from an edit. It gets its own plan against the green suite
+  this branch leaves behind.
+- **Phases 2–6** — storage (`chunkstore.py` → pgvector + `tsvector`), ingestion worker,
+  agent loop and API, frontend, evaluation.
+- **`verity/engine/retrieval/vector.py` and `chunkstore.py` were kept**, not deleted.
+  Spec §16 lists them as deletions, but Phase 2 is what replaces them, and deleting the
+  only working vector path before its replacement exists would leave the engine unable to
+  retrieve at all. Phase 2 owns both deletions.
+
+**Decisions left open on purpose.**
+
+- **`starter/models/` holds 129 MiB of untracked model weights** for a local embedding
+  backend that nothing loads any more. Deleting it is irreversible and it is not this
+  plan's to delete; the user should decide.
+- **Three docs are stale on arrival**: `docs/architecture.md`, `docs/learning-guide.md`,
+  `docs/testing.md` describe the challenge-era system and were written in `8a3929a`.
+  They are not wrong about the engine, which this plan preserved — they are wrong about
+  the CLI, the GPU path and the output contract, which are gone.
+- **Commit `1ac2489`'s message is inaccurate**: it says the deleted tests "covered … the
+  JSONL chunk store", but `test_chunkstore.py` was kept. The message is in history and
+  rewriting it would cost more than it is worth; recorded here instead.
+
+**Minor findings from the whole-branch review, deferred.** Each is a real suggestion that
+was not acted on, listed so it is a decision rather than an oversight:
+
+1. `test_engine_robustness.py` covers 5 of 9 reader types and hardcodes that list instead
+   of deriving it from `_READERS`; also leaves `tmp_path` unused at line 40.
+2. The bare-import detector was watched failing only once, and scans only `verity/engine`.
+3. Review Focus item 5 is only partly addressed: the public `reader_for` remains a
+   sanctioned route around the dispatcher.
+4. `test_a_cp1252_file_is_still_read_as_cp1252` never actually asserts cp1252.
+5. Challenge-era wording survives in comments: `chunkstore.py:309,321,384` ("build one
+   with `--index`"), `retrieval/vector.py:42`, `test_retrieval_vector.py`'s docstring,
+   `conftest.py:26-27`'s now-meaningless `noqa`, and `MC3_TESSERACT`.
+6. `AGENTS.md`'s layout block shows directories that do not exist yet, and its rule 2
+   cross-references I2 where I1 is the closer invariant.
+7. Spec §16 says `citations.py` was "Reimplemented" and `supersession.py` "Kept as an
+   idea", but both were deleted and Task 4 removed the only pointer to them. The deleted
+   `citations.py` also held a 6/10 → 7/10 OCR measurement worth preserving; it is in
+   `git show 8a3929a:starter/app/answering/citations.py`.
+8. XLSX parsing amplifies memory roughly 16× the sheet's text.
+9. The reviewed range includes `8a3929a` (Stage 7, +5.5k lines), which predates this
+   plan and is the origin of the three stale docs.
+

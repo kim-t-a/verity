@@ -83,19 +83,39 @@ def decode_text(raw: bytes) -> tuple[str, str]:
     trade-off at this layer -- mojibake still tokenises and can still be
     matched against a query. Whether the result is *text at all* is a separate
     question, answered by :func:`looks_like_text`.
+
     A byte-order mark is honoured first. Without that check a UTF-16 file --
     which is what Notepad writes when told to save as "Unicode" -- decodes as
     cp1252 into text interleaved with NULs, and is then rejected as not text.
 
-    The BOM path decodes with ``errors="replace"`` so that totality survives it:
-    a file cut off mid-unit would otherwise raise, and every line before the cut
-    would be lost with the one that was never written. Replacing the unreadable
-    unit keeps the prefix, which is the same trade the PDF reader makes for a
-    truncated flate stream.
+    The BOM path decodes **strictly**, and that strictness is what keeps the
+    not-text check meaningful. A two-byte marker is a claim by the producer,
+    not proof, and UTF-16 decodes almost anything into well-formed code points:
+    arbitrary bytes read back as a plausible string of Latin, Syriac and
+    Malayalam characters, which ``looks_like_text`` cannot fault because it
+    finds no control characters in them. Only a decoder that refuses the
+    malformed units the candidate encodings would have rejected keeps a binary
+    file with a misleading name out of the index.
+
+    A failure in the *final* unit is the one exception, and is salvaged: that
+    is a real UTF-16 document cut short, not a different kind of file, and
+    replacing the truncated unit keeps every complete line before the cut --
+    the same trade the PDF reader makes for a truncated flate stream.
     """
     for bom, encoding in UTF16_BOMS:
         if raw.startswith(bom):
-            return raw[len(bom) :].decode(encoding, "replace"), encoding
+            payload = raw[len(bom) :]
+            try:
+                return payload.decode(encoding), encoding
+            except UnicodeDecodeError as exc:
+                if exc.start >= len(payload) - 2:
+                    return payload.decode(encoding, "replace"), encoding
+                # Malformed well before the end, so the bytes are not a UTF-16
+                # document that was cut short -- they merely begin with our
+                # marker. Fall through to the candidate encodings, which reject
+                # them as not text, rather than letting two leading bytes turn
+                # arbitrary binary into an indexable document.
+                break
 
     for encoding in TEXT_ENCODINGS:
         try:
