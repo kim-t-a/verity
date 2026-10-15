@@ -2,9 +2,11 @@
 
 Two jobs:
 
-1. Put ``starter/app`` on ``sys.path`` so tests import the application the same
-   way the container does. See the comment below -- this is not a convenience,
-   it is what makes a green test meaningful.
+1. Import the engine the way every other consumer does: through the installed
+   ``verity`` package. There is no path manipulation here any more. The suite
+   used to put ``starter/app`` on ``sys.path`` to reproduce how the container
+   flattened the tree; ``verity`` is pip-installed now, so an import either
+   resolves through the package or fails loudly at collection.
 2. Provide a miniature corpus containing every hazard the brief warns about,
    built fresh in a temporary directory for each test.
 """
@@ -12,7 +14,6 @@ Two jobs:
 from __future__ import annotations
 
 import itertools
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -20,19 +21,9 @@ from typing import Callable
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-APP_DIR = REPO_ROOT / "starter" / "app"
 CORPUS_DIR = REPO_ROOT / "mc3-corpus"
 
-# The Dockerfile copies `starter/app/` to `/app/`, and the harness runs
-# `python3 /app/app.py`, which places /app on sys.path. The application's modules
-# therefore import each other by bare name (`import config`), and we reproduce
-# that here rather than importing them as `starter.app.*`. Testing a differently
-# wired import graph than the one that runs in the container is how a suite goes
-# green while the container fails.
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
-
-from verity.engine.ingestion import walker  # noqa: E402 - must follow the sys.path edit above
+from verity.engine.ingestion import walker  # noqa: E402 - constants must precede the fixtures that use them
 from verity.engine.models import DiscoveredFile  # noqa: E402
 
 
