@@ -16,6 +16,7 @@ from verity.engine.config import (
     MAX_TEXT_BYTES,
     TEXT_ENCODINGS,
     UNREMARKABLE_ENCODINGS,
+    UTF16_BOMS,
 )
 
 
@@ -82,7 +83,20 @@ def decode_text(raw: bytes) -> tuple[str, str]:
     trade-off at this layer -- mojibake still tokenises and can still be
     matched against a query. Whether the result is *text at all* is a separate
     question, answered by :func:`looks_like_text`.
+    A byte-order mark is honoured first. Without that check a UTF-16 file --
+    which is what Notepad writes when told to save as "Unicode" -- decodes as
+    cp1252 into text interleaved with NULs, and is then rejected as not text.
+
+    The BOM path decodes with ``errors="replace"`` so that totality survives it:
+    a file cut off mid-unit would otherwise raise, and every line before the cut
+    would be lost with the one that was never written. Replacing the unreadable
+    unit keeps the prefix, which is the same trade the PDF reader makes for a
+    truncated flate stream.
     """
+    for bom, encoding in UTF16_BOMS:
+        if raw.startswith(bom):
+            return raw[len(bom) :].decode(encoding, "replace"), encoding
+
     for encoding in TEXT_ENCODINGS:
         try:
             return raw.decode(encoding), encoding

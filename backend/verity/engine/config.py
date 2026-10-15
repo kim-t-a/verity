@@ -46,6 +46,22 @@ MAX_ZIP_MEMBER_BYTES = 256 * 1024 * 1024
 #: fail, which makes it the candidate that always terminates the search.
 TEXT_ENCODINGS = ("utf-8-sig", "cp1252", "latin-1")
 
+#: Byte-order marks that identify a UTF-16 file, and the codec each implies.
+#:
+#: Checked *before* the candidate encodings in ``TEXT_ENCODINGS``, not appended
+#: to them. Appending would not work: latin-1 maps all 256 byte values, so a
+#: UTF-16 file already "decodes successfully" -- the bytes just come back
+#: interleaved with NULs. Detection therefore has to happen before decoding,
+#: because afterwards the evidence is gone.
+#:
+#: Detection is by BOM rather than by sniffing, so that a cp1252 file of even
+#: length is never forced through a UTF-16 decoder that would produce
+#: plausible-looking garbage.
+UTF16_BOMS: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+
 #: Encodings whose use is unremarkable and needs no note in diagnostics.
 UNREMARKABLE_ENCODINGS = frozenset({"utf-8", "utf-8-sig"})
 
