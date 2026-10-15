@@ -177,13 +177,29 @@ git mv starter/app/models.py        backend/verity/engine/models.py
 git mv starter/app/normalisation.py backend/verity/engine/normalisation.py
 git mv starter/app/tokenisation.py  backend/verity/engine/tokenisation.py
 git mv starter/app/chunking.py      backend/verity/engine/chunking.py
+git mv starter/app/chunkstore.py    backend/verity/engine/chunkstore.py
 git mv starter/app/ingestion        backend/verity/engine/ingestion
 git mv starter/app/retrieval        backend/verity/engine/retrieval
 git mv starter/app/embeddings       backend/verity/engine/embeddings
-git mv tests                        backend/tests
+# tests/ moves per entry, NOT as a directory: backend/tests/ already exists
+# (Task 1 put test_package_imports.py there), so `git mv tests backend/tests`
+# would nest it as backend/tests/tests.
+git mv tests/*.py      backend/tests/
+git mv tests/.gitkeep  backend/tests/.gitkeep
+git mv tests/fixtures  backend/tests/fixtures
+rm -rf tests/__pycache__ && rmdir tests
 ```
 
-Leave `starter/app/app.py`, `starter/app/answering/` and `starter/app/chunkstore.py` where they are for now — they are deleted in Task 4, and moving them first would mean rewriting imports for code that is about to disappear.
+`chunkstore.py` moves with the engine because `retrieval/keyword.py` and
+`retrieval/vector.py` both import `ChunkIndex` from it, and `ChunkIndex` is the
+*input type* of both retrievers rather than challenge scaffolding. Only its disk
+persistence is challenge-specific, and the spec assigns replacing that to Phase 2
+(`spec:527`, `spec:600`) — not to this plan. Task 4 therefore leaves it alone.
+
+Leave `starter/app/app.py`, `starter/app/answering/` and
+`starter/app/requirements.txt` where they are for now — they are deleted in
+Task 4, and moving them first would mean rewriting imports for code that is
+about to disappear.
 
 - [ ] **Step 2: Rewrite the imports mechanically**
 
@@ -196,12 +212,15 @@ Every internal import becomes absolute. Apply these rewrites across `backend/ver
 | `from normalisation import` | `from verity.engine.normalisation import` |
 | `from tokenisation import` | `from verity.engine.tokenisation import` |
 | `from chunking import` | `from verity.engine.chunking import` |
+| `from chunkstore import` | `from verity.engine.chunkstore import` |
 | `from ingestion import` / `from ingestion.` | `from verity.engine.ingestion import` / `from verity.engine.ingestion.` |
 | `from retrieval import` / `from retrieval.` | `from verity.engine.retrieval import` / `from verity.engine.retrieval.` |
 | `from embeddings import` / `from embeddings.` | `from verity.engine.embeddings import` / `from verity.engine.embeddings.` |
 | `import config` | `from verity.engine import config` |
 
 Verified against the tree: these are the only bare-name forms in use. Relative imports *inside* a subpackage (`from . import tabular, xmlpart`) are already correct and must be left alone.
+
+The rewrite covers `backend/tests/*.py` as well as the engine — 26 test files import by bare name, and pytest cannot collect a single one of them after the move. It deliberately does **not** cover `answering` or `app`: those stay in `starter/app/` until Task 4, so their importers are expected to fail collection until then.
 
 - [ ] **Step 3: Prove no bare import survives**
 
@@ -239,7 +258,13 @@ BARE_NAMES = {
 }
 
 
-def _imported_roots(source: Path) -> list[str]:
+def imported_roots(source: Path) -> list[str]:
+    """Every top-level module name ``source`` imports.
+
+    Public rather than private so the detector itself can be exercised against
+    a tree known to contain bare imports -- a guard nobody has watched fail is
+    a guard nobody knows works.
+    """
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     roots: list[str] = []
     for node in ast.walk(tree):
@@ -252,40 +277,59 @@ def _imported_roots(source: Path) -> list[str]:
     return roots
 
 
+def bare_import_offenders(root: Path) -> list[str]:
+    """Files under ``root`` that import a neighbour by bare name."""
+    offenders: list[str] = []
+    for source in sorted(root.rglob("*.py")):
+        for name in imported_roots(source):
+            if name in BARE_NAMES:
+                offenders.append(f"{source.relative_to(root)} imports {name!r}")
+    return offenders
+
+
 def test_no_engine_module_imports_a_bare_neighbour() -> None:
-    offenders: list[str] = []
-    for source in sorted(ENGINE.rglob("*.py")):
-        for root in _imported_roots(source):
-            if root in BARE_NAMES:
-                offenders.append(f"{source.relative_to(ENGINE)} imports {root!r}")
+    offenders = bare_import_offenders(ENGINE)
     assert offenders == [], f"bare imports in the engine: {offenders}"
-
-
-def test_engine_imports_stranger_modules_only_from_the_standard_library() -> None:
-    """The engine's zero-dependency property is load-bearing, so it is tested."""
-    allowed = {"verity", *BARE_NAMES}
-    stdlib = {
-        "array", "collections", "csv", "dataclasses", "datetime", "enum", "hashlib",
-        "io", "json", "math", "os", "pathlib", "re", "shlex", "shutil", "stat",
-        "subprocess", "sys", "time", "typing", "unicodedata", "xml", "zipfile", "zlib",
-    }
-    offenders: list[str] = []
-    for source in sorted(ENGINE.rglob("*.py")):
-        for root in _imported_roots(source):
-            if root not in stdlib and root not in allowed:
-                offenders.append(f"{source.relative_to(ENGINE)} imports {root!r}")
-    assert offenders == [], f"third-party imports in the engine: {offenders}"
 ```
+
+`imported_roots` is public and `bare_import_offenders` is extracted so the
+detector can be pointed at a tree that is *known* to contain bare imports — in
+Task 2, `starter/app/`, which still does. A guard nobody has watched fail is a
+guard nobody knows works.
+
+The zero-third-party-dependency test does **not** belong here. `__future__` was
+missing from its stdlib allowlist, and more importantly the engine still imports
+`torch` and `transformers` from `embeddings/local_model.py` — which Task 3
+deletes. A test added here could not pass until Task 3, and a task whose suite is
+red at its own boundary is not done. It is created in Task 3, where the
+dependency actually goes away.
 
 - [ ] **Step 4: Run the full surviving suite**
 
-Run: `cd backend && TMPDIR=/tmp python -m pytest -q`
-Expected: the same pass/fail counts as the 681 collected before the move, minus the modules not yet deleted. Failures now are refactor mistakes — fix the refactor, do not touch assertions.
+Run: `cd backend && TMPDIR=/tmp python -m pytest -q --continue-on-collection-errors`
+
+`--continue-on-collection-errors` is required, not optional: without it the six
+`test_answering_*.py` modules below abort the run during collection and you get
+no pass/fail counts at all.
+
+Expected: `41 failed, 552 passed, 6 errors`, every one of the 47 accounted for by
+a contract this plan removes on purpose:
+
+| Result | Cause | Removed by |
+|---|---|---|
+| 32 failures in `test_import_graph.py` | asserts the bare-name graph Step 2 abolished | Task 6 replaces it |
+| 9 failures in `test_index_cli.py` | drives `starter/app/app.py`, whose imports Step 2 deliberately skips | Task 5 deletes it |
+| 6 collection errors in `test_answering_*.py` | `answering/` still imports `config`/`models` by bare name | Task 5 deletes them |
+
+A failure outside these three groups is a refactor mistake: fix the refactor, do
+not touch the assertion. Before the move the tree collected 681 tests; 593 ran
+here, the difference being the tests inside the six modules that now cannot be
+collected.
 
 - [ ] **Step 5: Confirm the old location is empty**
 
 Run: `ls starter/app/`
-Expected: only `app.py`, `answering/`, `chunkstore.py`, `requirements.txt` (plus `__pycache__`).
+Expected: only `app.py`, `answering/`, `requirements.txt` (plus `__pycache__`). `chunkstore.py` is *not* there — Step 1 moved it into the engine.
 
 - [ ] **Step 6: Commit**
 
@@ -347,15 +391,47 @@ any more.
 Run: `TMPDIR=/tmp python -m pytest backend/tests/test_embeddings.py -q`
 Delete every test that names `HashingEmbedder`, `local_model`, `provider_from_environment`, or a GPU/CPU guard. Keep the tests that assert the Protocol's shape and any test using a hand-written fake.
 
-- [ ] **Step 4: Run the suite**
+- [ ] **Step 4: Prove the engine imports nothing third-party**
+
+`embeddings/local_model.py` was the engine's only importer of `torch` and
+`transformers`, so deleting it is what makes the zero-dependency property true.
+That property is load-bearing — it is why the engine has no dependency graph to
+untangle and no transitive package that can change what a citation means — so it
+is tested. Append to `backend/tests/test_no_bare_imports.py`:
+
+```python
+def test_engine_imports_stranger_modules_only_from_the_standard_library() -> None:
+    """The engine's zero-dependency property is load-bearing, so it is tested."""
+    allowed = {"verity", *BARE_NAMES}
+    stdlib = {
+        "__future__", "array", "collections", "csv", "dataclasses", "datetime",
+        "enum", "hashlib", "io", "json", "math", "os", "pathlib", "re", "shlex",
+        "shutil", "stat", "subprocess", "sys", "time", "typing", "unicodedata",
+        "xml", "zipfile", "zlib",
+    }
+    offenders: list[str] = []
+    for source in sorted(ENGINE.rglob("*.py")):
+        for root in imported_roots(source):
+            if root not in stdlib and root not in allowed:
+                offenders.append(f"{source.relative_to(ENGINE)} imports {root!r}")
+    assert offenders == [], f"third-party imports in the engine: {offenders}"
+```
+
+Run: `cd backend && TMPDIR=/tmp python -m pytest tests/test_no_bare_imports.py -v`
+Expected: PASS. If it names `torch` or `transformers`, something still imports
+`local_model` — that import is the thing to fix, not the test. `__future__` is in
+the allowlist because it is a stdlib module that every file here imports; leaving
+it out produced 28 false positives when this test was first run.
+
+- [ ] **Step 5: Run the suite**
 
 Run: `cd backend && TMPDIR=/tmp python -m pytest -q`
 Expected: PASS. A failure here means something in `retrieval/` was importing a deleted name — that import is the thing to fix.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add -A backend/verity/engine/embeddings.py backend/verity/engine/embeddings backend/tests/test_embeddings.py
+git add -A backend/verity/engine/embeddings.py backend/verity/engine/embeddings backend/tests
 git commit -m "Reduce embeddings to the provider Protocol
 
 The local ROCm model, the hashing fallback and the CPU-path guard were all
@@ -371,7 +447,6 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Files:**
 - Delete: `starter/app/app.py`
-- Delete: `starter/app/chunkstore.py`
 - Delete: `starter/app/answering/` (entire directory)
 - Delete: `starter/app/requirements.txt`, `starter/app/` (now empty)
 
@@ -379,17 +454,22 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Consumes: nothing.
 - Produces: nothing. This task removes code; nothing later may import these names.
 
+`chunkstore.py` is **not** deleted here. It moved into the engine in Task 2
+because `ChunkIndex` is the input type of both retrievers, and the spec assigns
+replacing its disk persistence to Phase 2 (`spec:527`, `spec:600`). Deleting it
+now would leave the engine unimportable with no task in this plan to repair it.
+
 - [ ] **Step 1: Confirm nothing in the engine imports what you are deleting**
 
-Run: `grep -rn "answering\|chunkstore\|^from app\|import app" backend/verity/engine/`
-Expected: no matches. A match means a real dependency survived Task 2 — investigate before deleting.
+Run: `grep -rn "answering\|^from app\|import app" backend/verity/engine/`
+Expected: no matches. A match means a real dependency survived Task 2 — investigate before deleting. Do **not** add `chunkstore` to this pattern: the engine legitimately imports it, and every such match is expected.
 
 - [ ] **Step 2: Delete**
 
 ```bash
 cd /mnt/d/rag
 git rm -r starter/app/answering
-git rm starter/app/app.py starter/app/chunkstore.py starter/app/requirements.txt
+git rm starter/app/app.py starter/app/requirements.txt
 ```
 
 - [ ] **Step 3: Run the suite**
@@ -403,12 +483,14 @@ Expected: collection errors naming the deleted modules. That is correct and expe
 git add -A starter/app
 git commit -m "Delete the challenge-only CLI, index store and answering layer
 
-app.py, chunkstore.py and all of answering/ existed to satisfy a submission
-contract that no longer applies. answering/ in particular found literal
-values by classifying a question's expected answer shape and ranking
-candidates lexicographically -- machinery that exists only because the
-original system had no language model at query time. A model makes it
-obsolete, so it is deleted rather than adapted.
+app.py and all of answering/ existed to satisfy a submission contract that no
+longer applies. answering/ in particular found literal values by classifying a
+question's expected answer shape and ranking candidates lexicographically --
+machinery that exists only because the original system had no language model at
+query time. A model makes it obsolete, so it is deleted rather than adapted.
+
+chunkstore.py stays: it is the retrievers' input type, and the spec replaces it
+with Postgres in Phase 2 rather than here.
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
@@ -419,23 +501,33 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Files:**
 - Delete: `backend/tests/test_index_cli.py`
-- Delete: `backend/tests/test_chunkstore.py`
 - Delete: `backend/tests/test_answering_candidates.py`, `test_answering_citations.py`, `test_answering_extract.py`, `test_answering_refusal.py`, `test_answering_shapes.py`, `test_answering_supersession.py`
 - Delete: `backend/tests/test_embeddings_local.py`
 - Rewrite: `backend/tests/conftest.py`
+- Modify: `backend/tests/test_embeddings.py` (it imports `APP_DIR`, which Step 2 removes)
 - Modify: `backend/tests/document_fixtures.py` (only if it imports deleted names)
 
 **Interfaces:**
 - Consumes: `verity.engine.*` paths from Task 2.
 - Produces: `conftest.py` fixtures `hazard_corpus`, `build_corpus`, and constants `REPO_ROOT`, `CORPUS_DIR` (redefined in Task 9 when the corpus moves to `legacy/`).
 
+`test_chunkstore.py` is **not** deleted: `chunkstore.py` survives this plan (see
+Task 4), so the tests for it do too. It goes with the module in Phase 2.
+
+`APP_DIR` is removed in Step 2, but `test_embeddings.py:22` does
+`from conftest import APP_DIR` and uses it at line 247 to run an isolated
+subprocess probe. Whoever executes Step 2 must repoint that probe at the
+installed package in the same commit — otherwise removing `APP_DIR` is a
+collection error in a file Step 1 does not touch.
+
 - [ ] **Step 1: Delete the tests for deleted code**
 
 ```bash
-cd /mnt/d/rag/backend/tests
-git rm test_index_cli.py test_chunkstore.py test_embeddings_local.py
-git rm test_answering_candidates.py test_answering_citations.py test_answering_extract.py
-git rm test_answering_refusal.py test_answering_shapes.py test_answering_supersession.py
+cd /mnt/d/rag
+git rm backend/tests/test_index_cli.py backend/tests/test_embeddings_local.py
+git rm backend/tests/test_answering_candidates.py backend/tests/test_answering_citations.py
+git rm backend/tests/test_answering_extract.py backend/tests/test_answering_refusal.py
+git rm backend/tests/test_answering_shapes.py backend/tests/test_answering_supersession.py
 ```
 
 These test contracts deliberately removed — a CLI that no longer exists, an index format replaced by Postgres, and regex extraction replaced by a model. **Losing them is correct, not a regression.** Their value was in what they proved about code that is gone.
