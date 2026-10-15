@@ -7,7 +7,7 @@ corpus does not happen to contain -- shared strings, wide tables, nested
 tables, page trees, an empty workbook).
 
 Everything is generated in memory or into a temporary directory. Nothing here
-writes to ``mc3-corpus``, which is read-only reference data.
+writes to ``legacy/mc3-corpus``, which is read-only reference data.
 """
 
 from __future__ import annotations

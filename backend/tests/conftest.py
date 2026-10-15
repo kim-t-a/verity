@@ -21,7 +21,7 @@ from typing import Callable
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-CORPUS_DIR = REPO_ROOT / "mc3-corpus"
+CORPUS_DIR = REPO_ROOT / "legacy" / "mc3-corpus"
 
 from verity.engine.ingestion import walker  # noqa: E402 - constants must precede the fixtures that use them
 from verity.engine.models import DiscoveredFile  # noqa: E402

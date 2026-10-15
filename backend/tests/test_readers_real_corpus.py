@@ -24,7 +24,7 @@ from verity.engine.ingestion import walker
 from verity.engine.ingestion.readers import read_file
 from verity.engine.models import ReadStatus
 
-SAMPLE_QUESTIONS = REPO_ROOT / "sample-questions.json"
+SAMPLE_QUESTIONS = REPO_ROOT / "legacy" / "sample-questions.json"
 
 
 def normalise(value: str) -> str:
