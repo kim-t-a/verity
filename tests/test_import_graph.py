@@ -55,6 +55,9 @@ def test_app_dir_is_on_sys_path() -> None:
         "ingestion.walker",
         "ingestion.readers",
         "ingestion.readers.image",
+        "ingestion.readers.image_geometry",
+        "ingestion.readers.ocr_engine",
+        "ingestion.readers.ocr_tsv",
         "ingestion.readers.pdf",
     ],
 )

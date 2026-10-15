@@ -1,21 +1,26 @@
-"""Reader for images: recognition now, vision later.
+"""Reader for images: the file's own header, plus what an OCR engine saw.
 
 The challenge guarantees images in the corpus and requires them to be handled.
-This module does not yet read them -- there is no vision model in the build --
-and its whole job is to say so *precisely*, rather than to be quietly absent.
+This module is the seam where that happens, and it is deliberately thin: the
+work is done by two pure functions it calls, and what is left here is the part
+that cannot be pure -- opening a file, and starting a process.
 
-That distinction is the point. Rule 8: never silently skip image support. If
-the vision path is not ready it must report itself as unavailable, not return
-invented text. An image that produced no output is indistinguishable, from the
-outside, from an image that was never looked at; an image reported as
-``VISION_UNAVAILABLE`` is a statement about this build, and it is the statement
-that has to be visible while the requirement is still unmet.
+**Rule 8 is why the unavailable path still exists.** Never silently skip image
+support: if the vision path is not ready it must report itself as unavailable,
+not return invented text. An image that produced no output is indistinguishable,
+from the outside, from an image that was never looked at, whereas an image
+reported as ``VISION_UNAVAILABLE`` is a statement about *this build* -- and that
+is still the true statement when the engine has not been installed. So the
+engine's absence is one of the outcomes below rather than an oversight, and it
+is the outcome a development machine reaches by default.
 
-**What this module genuinely does.** It parses the image header and reports the
-real format and pixel dimensions. Those are facts read out of the file, not
-guesses, and they are worth having: they distinguish "we opened the image and
-it is a valid 1400x900 PNG we cannot read" from "this file claims to be a PNG
-and is not one". Only the first is a vision gap.
+**What this module genuinely does on its own.** It parses the image header and
+reports the real format and pixel dimensions. Those are facts read out of the
+file, not guesses, and they are worth having: they distinguish "we opened the
+image and it is a valid 1400x900 PNG we cannot read" from "this file claims to
+be a PNG and is not one". Only the first is a vision gap. The width is not
+merely reported, either -- the geometry needs it to reject a heading too wide to
+be a label, which is why it is read from the header rather than from the engine.
 
 **What it deliberately does not do.** The dimensions are reported in ``detail``
 and are *not* emitted as spans. Spans are what the index stores and the answer
@@ -24,12 +29,14 @@ metadata about a file. Emitting it would put a number into retrieval that no
 question is asking about, and could let an unrelated question match this file
 and cite it. A file may only be cited once we have actually read what it says.
 
-**Where the vision path attaches.** Stage 7 replaces the body of :func:`read`,
-after the header probe and before the return. There is no backend interface
-here yet on purpose: the requirements that would shape one -- which model,
-which image resolutions, whether a caption is enough or the pixels must be
-reasoned over -- are not known, and an interface designed without them would be
-replaced rather than implemented. The single seam is marked below.
+**How the pieces fit.** :func:`~ingestion.readers.ocr_engine.recognise` runs the
+engine and hands back its bytes; :func:`~ingestion.readers.ocr_tsv.words_from_tsv`
+turns those bytes into ``Detection``s; and
+:func:`~ingestion.readers.image_geometry.layout_from` turns the detections into
+lines and the relationships between them. Each of those is a pure function
+tested without an engine and without an image, so the only decisions this module
+makes are about outcomes -- which of the four ways the chain can end maps to
+which status.
 """
 
 from __future__ import annotations
@@ -38,9 +45,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import MAX_IMAGE_HEADER_BYTES
-from models import DiscoveredFile, MediaType, ReadResult, ReadStatus
+from models import DiscoveredFile, MediaType, ReadResult, ReadStatus, TextSpan
 
-from . import source
+from . import ocr_engine, source
+from .image_geometry import Layout, layout_from
+from .ocr_tsv import words_from_tsv
 
 #: PNG stores its dimensions in the IHDR chunk, which the specification
 #: requires to be first. Offsets, from the start of the file:
@@ -193,11 +202,74 @@ def probe(path: Path) -> ImageInfo | None:
     return probe_from_bytes(head)
 
 
-def read(discovered: DiscoveredFile) -> ReadResult:
-    """Report a recognised image as unreadable *by this build*, with evidence.
+def _spans_from(layout: Layout) -> list[TextSpan]:
+    """The lines, then the relationships, as spans.
 
-    Never returns text. There is no code path here that can produce a span, so
-    there is no way for an image to reach retrieval or to be cited as a source.
+    Lines come first and keep the reading order the geometry assigned them, so
+    a diagnostic listing the spans reads down the image. Associations follow,
+    numbered on from the last line, because they are derived facts rather than
+    things printed on the page -- and because a *line* ordinal has to stay the
+    line's place in the image for the two to be told apart at all.
+
+    Both are emitted. Withholding a line because nothing associated with it
+    would throw away the text of every flat label, and withholding the
+    association would leave a designator with no signal and a signal with no
+    pin; neither half answers the question on its own.
+    """
+    spans = [
+        TextSpan(text=line.text, location=line.location, ordinal=line.ordinal)
+        for line in layout.lines
+    ]
+    last = max((line.ordinal for line in layout.lines), default=0)
+    spans += [
+        TextSpan(text=association.text, location=association.location, ordinal=last + index)
+        for index, association in enumerate(layout.associations, start=1)
+    ]
+    return spans
+
+
+def _recognition_detail(info: ImageInfo, layout: Layout) -> str:
+    """What was recognised, in enough detail to debug a wrong answer.
+
+    The counts are the useful part. "0 associations" against a page full of
+    lines says the geometry found no diagram and refused nothing; a non-zero
+    refusal count says the opposite -- there was a diagram and it was too
+    ambiguous to read -- and those two call for looking at different things.
+    """
+    detail = (
+        f"recognised as a {info.summary}; "
+        f"{len(layout.lines)} text lines and {len(layout.associations)} associations"
+    )
+    if layout.rejections:
+        # Named rather than counted, because the reason is what says whether
+        # the image is ambiguous or the tolerances are wrong.
+        reasons = sorted({rejection.reason.value for rejection in layout.rejections})
+        detail += f"; refused {len(layout.rejections)} ambiguous pairings ({', '.join(reasons)})"
+    if layout.dropped_detections:
+        detail += f"; discarded {layout.dropped_detections} detections that were not text"
+    if layout.duplicate_detections:
+        detail += f"; dropped {layout.duplicate_detections} duplicate detections"
+    return detail
+
+
+def read(discovered: DiscoveredFile) -> ReadResult:
+    """Recover the text of an image, or say precisely why it could not.
+
+    Four outcomes, and the distinctions between them are the point:
+
+    ``UNREADABLE``
+        The name claims an image and the bytes are not one. No engine could
+        read it, so blaming the build would be wrong.
+    ``VISION_UNAVAILABLE``
+        A real image and no engine in this build. A statement about the build,
+        not about the file -- the one case where "we could not read it" is not
+        a fault in the file.
+    ``UNREADABLE``
+        The engine was found and failed, or returned something that is not TSV.
+        Now it *is* about the file, or about the engine's installation.
+    ``OK`` / ``EMPTY``
+        The engine read the image. ``EMPTY`` when it found no words, which is a
+        legitimate result for a blank photograph and not a failure.
     """
     info = probe(discovered.path)
 
@@ -209,14 +281,42 @@ def read(discovered: DiscoveredFile) -> ReadResult:
             "named as an image, but the header is not a readable PNG or JPEG",
         )
 
-    # --- The vision path attaches here. ---------------------------------
-    # A backend would consume the pixels and return spans with locations such
-    # as "region (120, 240)-(410, 300)". Until one exists, the honest result
-    # is that the image was recognised and could not be read.
-    return ReadResult.failure(
+    engine = ocr_engine.find_engine()
+    if engine is None:
+        return ReadResult.failure(
+            discovered.rel_path,
+            discovered.media_type,
+            ReadStatus.VISION_UNAVAILABLE,
+            f"recognised as a {info.summary}; no OCR engine is installed in this build, "
+            "so the image's contents have not been read",
+        )
+
+    try:
+        raw = ocr_engine.recognise(engine, discovered.path)
+    except ocr_engine.EngineFailed as exc:
+        return ReadResult.failure(
+            discovered.rel_path,
+            discovered.media_type,
+            ReadStatus.UNREADABLE,
+            f"recognised as a {info.summary}; the OCR engine could not read it: {exc}",
+        )
+
+    words = words_from_tsv(raw)
+    if not words.header_recognised:
+        # The engine ran and exited zero without producing TSV. Reporting this
+        # as EMPTY would make a broken invocation look like a blank image.
+        return ReadResult.failure(
+            discovered.rel_path,
+            discovered.media_type,
+            ReadStatus.UNREADABLE,
+            f"recognised as a {info.summary}; the OCR engine returned no TSV to parse",
+        )
+
+    layout = layout_from(words.detections, image_width=info.width)
+
+    return ReadResult.of(
         discovered.rel_path,
         discovered.media_type,
-        ReadStatus.VISION_UNAVAILABLE,
-        f"recognised as a {info.summary}; no vision backend is configured in this build, "
-        "so the image's contents have not been read",
+        _spans_from(layout),
+        detail=_recognition_detail(info, layout),
     )

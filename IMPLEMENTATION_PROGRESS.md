@@ -3,7 +3,7 @@
 Living progress log. Updated at the end of every stage. Durable rules live in
 `AGENTS.md`; this file records what was actually done, run, and left undone.
 
-**Last updated:** 2026-10-13
+**Last updated:** 2026-10-14
 
 ---
 
@@ -18,9 +18,10 @@ Living progress log. Updated at the end of every stage. Durable rules live in
 | 2 | Persistent indexing (chunk store, embedding interface, fake provider) | ✅ **complete** |
 | 3 | Keyword retrieval | ✅ **complete** |
 | 4 | Vector retrieval | ✅ **complete** |
-| 5 | Hybrid retrieval | ⬜ not started |
-| 6 | Answer extraction and citations | ⬜ not started |
-| 7 | Image and vision support | ⬜ not started |
+| 4b | The embedding model and the real backend | ✅ **complete** |
+| 5 | Hybrid retrieval | ✅ **complete** |
+| 6 | Answer extraction, citations and refusal | ✅ **complete** |
+| 7 | Image and vision support | 🟡 **reader wired and reading; engine not yet in the image** |
 | 8 | Local integration (self-check, sample scoring) | ⬜ not started |
 | 9 | AMD GPU validation (notebook, ~3 h) | ⬜ not started |
 
@@ -2168,3 +2169,1405 @@ Stage 7 — vision support, for q7 (`specs/backplane_pinout.png`) and q8
 (`support/asset_label.jpg`). The ingestion path already reports
 `vision_unavailable` for both rather than inventing text, so rule 8 holds; what is
 missing is the reader itself.
+
+---
+
+# Stage 7 — pre-implementation investigation
+
+**Status: investigation only.** No application code, Dockerfile, requirements or
+test file was created, modified or removed. Nothing is decided. No package, model
+or wheel was downloaded.
+
+The investigation was commissioned to answer three questions before committing to
+an OCR-based vision path: whether the candidate OCR engines can exist in the
+mandated image at all, how OCR output becomes `TextSpan`s without corrupting the
+existing pipeline, and whether the current workload satisfies the challenge's
+1 GiB VRAM floor.
+
+## What was examined
+
+`CONTRACT.md`; the full 8-page brief, re-extracted page by page with this
+project's own `ingestion.readers.pdf` (the laptop has no `poppler`, so the brief
+PDF cannot be rendered as an image); `selfcheck.py`; `starter/Dockerfile`;
+`starter/app/requirements.txt`; `config.py`; `models.py`; `chunking.py`;
+`ingestion/readers/image.py`; `embeddings/local_model.py`;
+`tests/test_readers_image.py`; the two corpus images, opened and viewed directly;
+and PyPI package metadata.
+
+Local environment facts re-checked on 2026-10-14: the laptop is Ubuntu 24.04 /
+Python 3.12.3, and **no Python 3.14 exists locally**; the working venv holds
+`torch 2.14.1+cpu`, `transformers 5.19.0`, `numpy 2.5.4`, `tokenizers 0.23.3`,
+`safetensors 0.8.0`; `tesseract` is **not installed**; `apt-cache` offers
+`tesseract-ocr 5.3.4-1build5` from Ubuntu 24.04 `universe`; and **`docker` is not
+reachable from this WSL distro** (Docker Desktop WSL integration is currently
+off), so the base image could not be inspected.
+
+The two images were opened and read visually. This was the single most useful step
+in the investigation, and it is worth recording what they actually contain,
+because the design depends on it:
+
+- `specs/backplane_pinout.png` (1000x560) — a title line, then **six pin boxes in
+  a row** (`B11`..`B16`), each with a short vertical leader line dropping to a
+  text label beneath it: `GND`, `SDA`, `SCL`, `THERM_ALERT#`, `PRSNT#`, `GND`.
+  Below the row sit two prose paragraphs, the first of which also mentions
+  `THERM_ALERT#`. Note `GND` appears **twice**, as a genuine duplicate in the
+  source.
+- `support/asset_label.jpg` (760x440) — a title block reading `Orrery Systems`,
+  `MODEL TQ-40`, `BOARD REVISION REV-C2`, `SN OS4-118823-77`, `MADE IN MALAYSIA`,
+  plus **a barcode of vertical stripes** on the right.
+
+## Verified facts
+
+**Python 3.14 wheel availability — checked against PyPI, not assumed.** The
+brief's own trap 2 makes this the decisive question, and it produced the
+investigation's one outright blocker:
+
+| Package | Newest | Python 3.14 on Linux x86_64 |
+|---|---|---|
+| `rapidocr-onnxruntime` | 1.4.4 | ❌ **blocked** — metadata declares `requires_python = "<3.13,>=3.6"`; pip refuses it on 3.14 |
+| `rapidocr` (v3 successor) | 3.10.0 | ✅ `py3-none-any`, `requires_python = "<4,>=3.8"` |
+| `onnxruntime` | 1.31.0 | ✅ `cp314-cp314-manylinux_2_28_x86_64` (present since 1.27.0) |
+| `opencv-python-headless` | 5.0.0.93 | ✅ `cp37-abi3` stable-ABI wheel, so it covers 3.14 |
+| `numpy` | 2.5.4 | ✅ `cp314` manylinux x86_64 |
+| `pyclipper` | 1.4.0 | ✅ `cp314` manylinux x86_64 |
+| `shapely` | 2.2.0 | ✅ `cp314` manylinux x86_64 |
+| `pytesseract` | 0.3.13 | ✅ `py3-none-any` (pure Python) |
+| `onnxruntime-rocm` | 1.22.2.post3 | ✅ `cp314` manylinux x86_64 exists — but see risks |
+
+The headline is that the *familiar* package name is the one that fails:
+`rapidocr-onnxruntime` is what every tutorial names, and pip would refuse it on
+Python 3.14. Only the renamed `rapidocr` 3.x line is a candidate.
+
+**Metadata-level availability is not installation.** Every ✅ above says a wheel
+*exists* for the right interpreter and platform. None of it says the package
+imports, links, or runs on this image. That distinction is why both candidates
+must be exercised inside the container before either is committed to.
+
+**Tesseract in Ubuntu 26.04 (Resolute)** — documented externally, not verified in
+the image: `tesseract-ocr` 5.5.0 is in `universe`, and language data ships as
+separate packages under `tesseract-lang` (`tesseract-ocr-eng`). Two consequences:
+the base image's apt sources must have `universe` enabled, and the `.traineddata`
+must be present in the image, because evaluation has no network.
+
+**The VRAM mechanism, from the kit rather than guessed.** `selfcheck.py` holds
+`VRAM_FLOOR_GIB = 1` and `VRAM_CEILING_GIB = 48`, and its check 6 names the tool
+the harness uses:
+
+```
+watch -n1 'amd-smi metric --mem | grep USED_VRAM'
+```
+
+`CONTRACT.md` states the same band with 1% tolerance on the upper bound, that VRAM
+is "sampled continuously and the peak is what counts", that under the floor means
+CPU and is rejected, and that pinning a dummy buffer is detected separately.
+Because the *peak* is what counts, a transient spike during `--index` or during
+one `--query` is sufficient — the model does not have to be resident.
+
+**The embedding model's weight footprint, by arithmetic.** `config.json` declares
+`torch_dtype: float32` and `model.safetensors` is 133,466,304 bytes, which matches
+33.4 M parameters at 4 bytes each. **That is 0.13 GiB — roughly an eighth of the
+floor.** Everything else the run occupies is runtime overhead.
+
+## Unverified assumptions and risks
+
+1. **The current workload may sit below the VRAM floor.** The weights are
+   0.13 GiB. Whether the process peaks above 1 GiB depends entirely on ROCm/HIP
+   context and torch allocator overhead, which **cannot be predicted from
+   parameter count** and has not been measured — there is no AMD GPU on the
+   laptop. This is the largest structural risk found.
+2. **The exact sampling mechanism is not specified.** `selfcheck.py` names
+   `amd-smi metric --mem` but automates nothing; the sampling interval, and
+   whether the floor is evaluated over the container's whole lifetime or only
+   during graded phases, are unknown. The phrase "sampled continuously" plus a
+   `sleep infinity` container suggests the whole lifetime, which is why the *peak*
+   framing matters.
+3. **`--index` timing under OCR is unmeasured.** OCR runs once per image during the
+   index pass (10 min budget), not per query, so it is affordable — but the graded
+   corpus is larger and its image count is unknown.
+4. **OCR accuracy on the pinout is unproven.** The label is clean printed text and
+   should be easy. The pinout is a *diagram*: Tesseract's page-layout analysis may
+   reorder or merge the row. `THERM_ALERT#` ending in `#` is a specific
+   misrecognition risk.
+5. **`onnxruntime-rocm` is a poor bet for GPU OCR.** It is a separate package from
+   `onnxruntime` (both provide the `onnxruntime` module), it bundles its own ROCm
+   runtime libraries alongside the base image's, its newest release (1.22.x)
+   trails the CPU package (1.31.0), and gfx1100/RDNA3 support for the ROCm
+   execution provider is unverified.
+6. **RapidOCR 3.x downloads its models on first use.** `requests` is a declared
+   dependency and no engine is declared at all, so the ONNX runtime must be named
+   explicitly and the model files pre-baked into the image. This is inferred from
+   metadata plus documented behaviour, **not verified**.
+7. **Barcode noise is a real hazard for the label.** Vertical stripes are exactly
+   the shape that produces spurious low-confidence glyph runs. Unfiltered, they
+   would enter the index as text.
+8. **A cross-stage gap this stage does not close.** q7's expected answer is `B14`
+   and q8's is `REV-C2`. `answering/shapes.py` derives wanted value shapes from
+   question words; there is no pin-designator shape today, and Stage 6b measured
+   q8 currently answering `TQ-40` — which is *also printed on the label*, as
+   `MODEL TQ-40`. Making the image readable is therefore necessary but may not be
+   sufficient for q7/q8; extraction shapes may need extending too.
+
+## Tesseract versus RapidOCR
+
+| | Tesseract | RapidOCR |
+|---|---|---|
+| Engine | C++ binary, installed by `apt` | Python + ONNX inference |
+| New Python deps required | **none**, if invoked as a subprocess | onnxruntime, opencv-python-headless, numpy, pyclipper, shapely, omegaconf, PyYAML, Pillow, six, tqdm, requests, colorlog |
+| Python 3.14 status | not applicable — no Python package involved | `rapidocr-onnxruntime` **refused** by pip; `rapidocr` 3.x installable |
+| Coordinates | word-level boxes via TSV output (`left/top/width/height/conf`) | text-line quads plus a confidence score |
+| Approximate size | tens of MB (binary, libtesseract, leptonica, `eng.traineddata`) | ~150–300 MB (onnxruntime, OpenCV, numpy, models) |
+| Offline | fully offline once installed | fully offline **only if models are pre-baked** |
+| GPU | none (CPU only) | CPU by default; ROCm EP is a separate, unverified package |
+| pip / torch-replacement risk | **zero** — nothing is pip-installed | real — several installs; mitigate with `--no-deps`, an explicit list, and a post-build `torch.__version__` check |
+| Determinism | deterministic | deterministic |
+
+**Recommend which to test first: Tesseract.** The deciding argument is not
+accuracy, it is blast radius. Tesseract can be driven by an `apt` package and a
+`subprocess` call, which means the shipped payload stays exactly what it is today
+— standard library only — and the brief's trap 2, in which a pip install silently
+swaps ROCm torch for a CUDA build, is never even approached. It also removes the
+Python 3.14 question entirely, because no Python package is involved. Its TSV
+output already carries the word-level boxes the geometry test needs.
+
+RapidOCR is the better *fallback*, not the better first test: it is the stronger
+engine on messy text, but it is reached only through `rapidocr` 3.x, and it brings
+a dependency chain whose every compiled member had to be individually checked —
+exactly the kind of risk to spend only if Tesseract proves inadequate.
+
+## The image-to-TextSpan path
+
+**The one structural fact that shapes everything: `TextSpan` has no coordinate
+field.** It carries `text`, `location` and `ordinal`. Adding a bounding box would
+change `models.py`, the chunk store and the index format version. It is also
+unnecessary: geometry is an *internal* concern of the image reader — it is the
+thing that lets the reader work out *which* text belongs with *which* pin. What
+crosses the boundary is text plus a human-readable location, exactly as every
+other reader already does.
+
+So the path is:
+
+```
+image bytes
+  → OCR (external engine, behind a seam)
+  → Detections: (text, confidence, left, top, width, height)      [pure data]
+  → line spans:      one span per detected line, location "text line N at (x, y)"
+  → association:     pure geometry function over Detections
+  → association spans: location "pin region (x, y)-(x2, y2)"
+  → ReadResult.of(...) → chunking.py → index     [all unchanged]
+```
+
+Nothing new is added to `chunking.py`, the chunk store, retrieval or answering.
+The reader keeps its contract: it never raises, failure stays a value, and
+`ReadResult.of` still downgrades a text-less result to `EMPTY` rather than `OK`.
+
+**The load-bearing design decision is that the geometry is a pure function over
+detections, not over pixels.** Two things follow. The whole association rule — the
+part that can be wrong in interesting ways — is unit-testable with synthetic
+detection lists, with no OCR engine, no image file and no GPU, exactly as
+`probe_from_bytes` let the header parsers be tested without files. And the OCR
+engine sits behind one narrow seam, so Tesseract and RapidOCR are swappable
+without touching the reasoning.
+
+The deterministic association test for the pinout, as the images show it to be:
+
+1. **Classify** each detection as an *upper* candidate (a short, separator-free
+   alphanumeric token, `B14`) or a *lower* candidate (a signal label,
+   `THERM_ALERT#`). Classification is structural — short token above another short
+   token — **not** a regex fitted to `B\d\d`, because the graded corpus will use
+   different designators. Long lines, such as the title and the prose paragraphs,
+   are excluded by width, which is what stops the title pairing with the first pin
+   box.
+2. **Pair** each upper token with the lower token that is (a) strictly below it,
+   (b) within a bounded vertical gap, and (c) horizontally centred on it, the
+   centre distance being the quantity minimised. Nearest-centre matching is what
+   resolves the two genuine `GND` labels, because each is nearest its own pin.
+3. **Refuse when ambiguous.** Emit no association, and record the reason, when
+   there is no candidate, when the best and second-best candidates are within a
+   margin of each other, when two upper tokens claim the same lower token, or when
+   the lower token is wide enough to overlap two columns. A diagram the rule cannot
+   read must yield *no* relation, never a confident guessed one — an invented
+   pin-to-signal pairing is indistinguishable downstream from a real one and would
+   be cited as evidence.
+4. **Never synthesise unread text.** Every span's text is either a verbatim OCR
+   line or the joining of two verbatim OCR strings. No word is added that the image
+   does not contain.
+
+**One open design question, deliberately not settled here: the direction of the
+rendered association.** `B14 | THERM_ALERT#` and `THERM_ALERT# | B14` are the same
+fact but they behave differently downstream. Stage 6b's refusal rule fires when the
+winning value sits under a field name sharing no word with the question; if the
+association renders as `field=value`, then `THERM_ALERT#=B14` lets the extractor
+treat `B14` as the value and the question's own words as the label, while the
+reverse invites `THERM_ALERT#` to be lifted as the answer. The right resolution is
+measurement on the real pipeline in Stage 7, not a decision taken now on taste.
+
+**Tests the design calls for**, beyond the existing header tests:
+
+- association exercised entirely through synthetic detection lists — arbitrary
+  designators and arbitrary signals, never `B14`/`THERM_ALERT#` keyed to the
+  sample, so the rule cannot be a lookup table wearing a geometry costume;
+- a layout shaped like the real one (six boxes, one duplicate `GND`) pairs
+  correctly, **including** the duplicate;
+- an asset-label layout yields one span per printed line, and **barcode noise is
+  suppressed** — a run of stripe detections at low confidence must not become text;
+- OCR returns nothing → `EMPTY` with no spans, and specifically **not** `OK`;
+- the engine binary is absent → `VISION_UNAVAILABLE`, so rule 8 still holds and the
+  silence is still named;
+- the engine exits non-zero, times out, or emits malformed output → `UNREADABLE`
+  with no spans, never a traceback;
+- duplicate/overlapping detections of the same text are collapsed before pairing;
+- ambiguous column pairing and many-to-one conflicts produce **no** association;
+- the invariant: no path produces a span whose text is absent from the OCR output.
+
+## GPU and VRAM validation plan
+
+**What the contract actually requires** (both documents agree, and `selfcheck.py`
+independently repeats it): peak VRAM between **1 and 48 GiB**, sampled
+continuously, peak rather than average; below the floor is judged CPU-only and
+rejected; a deliberate dummy buffer is detected separately. Because the peak is
+what counts, the requirement is met by any genuine moment above 1 GiB.
+
+**What is known about the current workload:** weights are 0.13 GiB by arithmetic
+from the file size; nothing else is known, and **no measurement is invented here**.
+Parameter count does not predict peak VRAM, so the honest position is that the
+current peak is unknown and the floor's safety margin is unknown with it.
+
+**Measurement plan, for the notebook session:**
+
+1. Sample device memory continuously during a full run, writing timestamps and
+   values to a log, using the tool `selfcheck.py` names:
+   `while true; do amd-smi metric --mem; sleep 1; done > vram.log`. Record the
+   `amd-smi` version, the GPU name and the ROCm version alongside it.
+2. Capture the three phases separately, because the peak may occur in only one:
+   container idle after start; the `--index` pass; a single `--query`.
+3. Record **two independent views** and report both, because they answer different
+   questions: the device-level `USED_VRAM` peak (what the harness sees, and it
+   includes the HIP context), and the process-level
+   `torch.cuda.max_memory_allocated()` / `memory_reserved()` (what our code asked
+   for). The gap between them is the runtime overhead, and knowing its size is what
+   makes the result interpretable rather than a single number.
+4. Run it against the real sample corpus and against a synthetic corpus with many
+   more chunks, so the index-pass peak is exercised at scale.
+5. Evidence to keep: the raw `vram.log`, the peak value with the phase it occurred
+   in, and the exact commands.
+
+**Open questions to flag rather than assume:** the sampling interval, and whether
+the floor is evaluated across the container's whole lifetime or only during graded
+phases. If either turns out to be stricter than assumed, the answer changes.
+
+**If the peak is below 1 GiB — options, and what they cost:**
+
+1. **Put the vision model on the GPU.** This is the option to prefer, because it is
+   *required work* rather than padding: q7 and q8 cannot be answered without it. A
+   small torch-based model runs on the ROCm torch the image already ships, adding
+   weights but no new compiled dependency. It solves two problems with one
+   decision.
+2. **Use a larger embedding model.** A genuine quality trade, and bge-large at
+   fp32 would clear the floor on weights alone — but it lengthens every query
+   process (measured today: 8.99 s of a 30 s budget with the small model) and the
+   sample corpus cannot demonstrate a retrieval gain.
+3. **Raise the embedding batch size.** Real work, modest effect on activation
+   memory only. Cheap to try, unlikely to be sufficient alone.
+
+**What must not be done:** allocating a buffer to clear the floor. The contract
+names it explicitly as separately detected, and it is a disqualification, not a
+tuning choice.
+
+## Recommended next action
+
+1. **Build and fully test the geometry module first, with no OCR at all.** It is a
+   pure function over detections, so every rule above — pairing, the duplicate
+   `GND`, the ambiguity refusals, the barcode filter — can be written and proven
+   under the existing suite with no engine, no image and no GPU. This needs no
+   permission and no download, and it is the part most likely to hide a silent bug.
+2. **Then test Tesseract on the two real sample images**, which needs one approval
+   this investigation could not take for itself: installing `tesseract-ocr` locally
+   (a small `apt` download) to see what the engine actually returns for
+   `THERM_ALERT#` and for the pin row. Until that is run, every accuracy claim here
+   is an expectation.
+3. **Settle the VRAM question on the notebook before choosing a vision
+   architecture**, because it decides whether the vision model is merely needed for
+   q7/q8 or is also load-bearing for the floor.
+
+Nothing was implemented, and nothing will be until this is approved.
+
+---
+
+# Stage 7A — the image layout geometry
+
+**Status: implemented and tested. Geometry only.** No OCR engine was installed, no
+model was downloaded, no Docker or dependency file was touched, and nothing about
+answer extraction, citation selection or GPU behaviour changed. The two images in the
+sample kit were *not* run through anything: there is still no engine to run them
+through.
+
+`starter/app/ingestion/readers/image.py` is **byte-identical to before this stage**.
+The seam exists in the design but is not wired, because there is nothing behind it
+yet.
+
+## What was built, and why this piece first
+
+The Stage 7 investigation recommended building the geometry before the engine, and
+that recommendation is the whole shape of this stage. The part of image support most
+likely to be *silently* wrong is not the OCR call — that either returns text or
+doesn't — it is the rule that decides which piece of text belongs with which. A
+designator and a signal name on a connector diagram are two separate detections, and
+the fact that they are related is stated by nothing but their positions.
+
+That rule is now a pure function over boxes:
+
+```python
+layout_from(detections, *, image_width=None) -> Layout
+```
+
+It reads no file, calls no engine, opens no pixel, and is deterministic. So every
+tolerance in it can be tested with invented coordinates, the way the header parsers
+in `image.py` are tested with invented bytes.
+
+## The interface
+
+Three frozen dataclasses in, three out, and one function:
+
+| Type | Role |
+|---|---|
+| `Detection` | one engine finding: `text`, `confidence`, `left`, `top`, `width`, `height` |
+| `TextLine` | one line of recognised text, with an `ordinal` (reading position, from 1) and a `location` |
+| `Association` | two lines that belong together, plus the `location` of the pair |
+| `Rejection` | an association geometry could have made and declined, with a `RejectionReason` |
+| `Layout` | everything one image yielded: `lines`, `associations`, `rejections`, `dropped_detections`, `duplicate_detections` |
+
+Field names are the ones OCR engines use, so the eventual adapter is a transcription
+rather than a translation.
+
+**`TextSpan` was not changed.** Inspection confirmed it does not need to be. It is
+`(text, location, ordinal)` with no coordinate field, and the geometry needs
+coordinates only internally — what crosses the boundary is text plus a
+human-readable location. Adding a box to `TextSpan` would change the shared schema
+that the chunk store and the index format are written against, to buy nothing: the
+`location` string carries the provenance, in the shape the other readers already use.
+
+```
+"text line 4 at (63, 150)"                              # one line
+"text lines 4 and 5 at region (63, 150)-(180, 232)"     # one association
+```
+
+That is the same convention `image.py`'s own docstring anticipated
+(`"region (120, 240)-(410, 300)"`), and it is enough for a reader to draw the boxes
+back onto the image and check a pairing against what the engine claimed. One
+`TextSpan` will be emitted per line and one per association, so the association text
+enters chunking and the index through exactly the path ordinary text does.
+
+## Files
+
+| File | Change |
+|---|---|
+| `starter/app/ingestion/readers/image_geometry.py` | **new**, 643 lines — the module |
+| `starter/app/config.py` | +11 constants under a `# --- Image layout ---` block |
+| `tests/test_readers_image_geometry.py` | **new**, 828 lines, 60 tests |
+| `tests/test_import_graph.py` | +1 parametrised row for the new module |
+| `starter/app/ingestion/readers/image.py` | **unchanged, byte for byte** |
+
+## The rules, and what each one protects
+
+Each tolerance in `config.py` is documented in place with the failure it guards
+against. Summarised:
+
+1. **Lower-confidence-than-`MIN_OCR_CONFIDENCE` detections are not text.** Barcode
+   stripes and ruling lines come back as text-shaped detections at near-zero
+   confidence. Indexing them would put words into the corpus that are not in it.
+2. **Same text *and* same box is one detection** (`DUPLICATE_BOX_OVERLAP`, measured
+   against the smaller box so a nested box still counts). Same text at a *different*
+   place is a real second occurrence and is kept — a diagram with two `GND` pins
+   depends on it.
+3. **Line grouping needs vertical overlap *and* a horizontal gap limit**
+   (`LINE_VERTICAL_OVERLAP`, `LINE_MAX_HORIZONTAL_GAP_FACTOR`). This is the expensive
+   one in both directions: without the horizontal half, every label on a row shares a
+   baseline and the whole row fuses into one long line, which is then too long to be
+   a candidate — losing *every* pairing on the image at once.
+4. **An identifier is one word** (`MAX_IDENTIFIER_WORDS = 1`). This is the strongest
+   rule and it does most of the work. The most dangerous layout in an image is a
+   title block: a stack of evenly spaced centred lines whose spacing falls inside the
+   association band, and whose shape is almost exactly a diagram's. No line of a title
+   block is a single token.
+5. **A label is at most four words** (`MAX_LABEL_WORDS`), and a heading may not span
+   more than half the canvas (`MAX_ASSOCIATION_WIDTH_FRACTION`) when the width is
+   known.
+6. **The gap between the two boxes must be between 2 and 12 text heights**
+   (`ASSOCIATION_MIN_GAP_FACTOR`, `ASSOCIATION_MAX_GAP_FACTOR`). The floor is what
+   stops ordinary line spacing inside a text block from reading as a field-and-value
+   relationship; the ceiling stops a column-aligned coincidence far down the page.
+7. **The centres must line up** (`ASSOCIATION_MAX_CENTRE_OFFSET_FRACTION`), which is
+   what a leader line means.
+8. **Ambiguity is refused, not resolved** (`ASSOCIATION_AMBIGUITY_FACTOR`). If the two
+   best candidates are within one text height of each other, no association is
+   emitted and a `Rejection(TOO_CLOSE_TO_CALL)` is recorded. The other two refusals
+   are `SHARED_LABEL` (two identifiers claimed one label) and `CHAINED` (a token sits
+   on both sides of an association, which a stack of three tokens produces).
+
+Refusals are recorded **only when there was something plausible to refuse**. A token
+with no neighbour is ordinary text, and recording every lonely token would bury the
+real refusals in noise.
+
+## Tolerances measured, not guessed
+
+Two constants would have been wrong if they had been left as first written, and both
+were caught by measuring the real image rather than by reasoning about it.
+
+There is no PIL in the local venv and nothing may be installed, so the sample PNG was
+decoded with the standard library (`zlib` plus the five PNG scanline filters) and its
+ink rows profiled, using throwaway scripts kept deliberately **outside the
+repository** in `/tmp/mc3-tools/`. What came back:
+
+- six pin boxes **117 px wide** on a **150 px column pitch**
+- designators **16 px tall**, tops at **y=150**
+- signal labels **10 px tall**, tops at **y=222**
+
+So the real gap is 56 px against a 10 px unit — **5.6 text heights**.
+
+- The ceiling had been written as `6.0`. The real pairing sits 7% under it: a
+  slightly tighter OCR box would have silently killed the one pairing the whole
+  exercise exists to find. Raised to **12.0**.
+- The floor had been written as `1.0`, and the adjacent lines of the sample label are
+  about 1.3 text heights apart — *above* the floor, so it protected nothing. Raised to
+  **2.0**, and the one-word identifier rule was added as the real title-block guard.
+
+Both measurements are re-asserted as tests in `TestTheMeasuredShape`, which replays
+the real geometry with invented text, so the next person to loosen a tolerance gets a
+failing test rather than a silent loss.
+
+## Tests
+
+60 tests in `tests/test_readers_image_geometry.py`, all synthetic. Every designator
+and signal in the file is invented — the sample's real names appear nowhere — because
+a test written around the sample's own two strings would pass just as happily against
+a lookup table keyed on the filename.
+
+Covering, per the request: several columns with arbitrary identifiers and labels;
+duplicate labels in separate columns; duplicate and nested and differently-spelled
+detections; missing upper or lower text; long headings; ambiguous column positions;
+two identifiers competing for one label; no fabricated text; empty detections and
+invalid coordinates (zero, negative, NaN, infinite, boolean, blank, punctuation-only).
+
+Three of them are worth naming:
+
+- `test_a_diagram_sharing_nothing_with_the_sample_still_works` — a designator shape,
+  a two-word label and a punctuated lower-case signal that appear in no sample file.
+- `test_every_association_is_two_recognised_lines_and_nothing_else` — the
+  never-invent invariant stated as an equality: an association's text must split into
+  exactly two parts on `CELL_SEPARATOR` and both must be lines the engine reported. A
+  connecting word or a rewritten spelling would fail it.
+- `TestTheMeasuredShape` — the real geometry, invented text.
+
+## Results
+
+**Geometry tests: 60 passed, 0 failed** (`pytest tests/test_readers_image_geometry.py`).
+
+**Full suite: 610 passed, 0 failed, in 66.75 s.** That is 549 (the Stage 6b figure) plus
+the 60 geometry tests plus one import-graph row.
+
+**The first run failed 8 of 54 and is recorded here rather than quietly fixed.** Seven
+were my fixtures or helpers being wrong — a two-word "identifier" that the one-word
+rule rightly rejected, a helper missing a `width` argument, a 20 px gap that is not a
+realistic diagram gap, a reading-order expectation that contradicted the module's own
+left-to-right rule. The eighth was a **genuine defect**, and it is the reason
+`_lines_from` has a merge pass:
+
+> With detections sorted by `(top, left)`, `REV-C2` at top 100 is visited before
+> `REVISION` at top 104, so one line of text split into two groups — and the greedy
+> first-match pass never merged them. The fragments were `"BOARD REVISION"` and
+> `"REV-C2"`, both short enough to look like candidates.
+
+That is exactly the failure mode the module exists to avoid, so the fix was verified
+rather than assumed: with the merge pass disabled, **2 tests fail and 58 pass**; with
+it restored, **60 pass**. The regression is pinned by
+`test_a_word_arriving_late_still_joins_the_two_halves_it_bridges`, whose fixture
+(`NORTH CROSSING SOUTH`, with the middle word reported last) fails as
+`['NORTH CROSSING', 'SOUTH']` without the fix.
+
+## What this stage deliberately does not do
+
+- **No OCR engine.** `tesseract-ocr` and `rapidocr` are both still uninstalled, as
+  instructed. Nothing here has been run against a real image.
+- **No dependency or Docker change.** The Dockerfile and requirements files are
+  untouched.
+- **The seam is not wired.** `image.py` still reports the vision path as unavailable
+  and does not import the geometry module. Rule 8 of `AGENTS.md` — report
+  unavailability, never invent text — is still satisfied by the existing code.
+- **Nothing downstream changed.** No answer extraction, no citation selection, no GPU
+  behaviour. The geometry module is currently reachable only from its tests.
+
+## Still outstanding — recorded so it is not lost
+
+### 1. The GPU memory floor is still unmeasured on the target hardware
+
+Nothing in this stage touches it, and it is still the largest unknown in the project.
+The contract samples VRAM continuously and rejects a peak below **1 GiB** as a run on
+CPU, with a dummy allocation detected separately. What is not known is whether the
+embedding model alone clears the floor: its weights measure 133,466,304 bytes ≈
+**0.13 GiB**, which is suggestive and is not the same as a measured peak, because the
+figure that matters is peak *device* usage across the whole run.
+
+To be settled on the notebook by running the real pipeline under
+`watch -n1 'amd-smi metric --mem | grep USED_VRAM'` and recording the peak.
+
+**Solving it by allocating a dummy buffer is explicitly not on the table.** It is a
+disqualification, not a tuning choice, and it would also be dishonest.
+
+### 2. Real-image OCR — measured on 2026-10-14, results in the next section
+
+This was recorded here as an expectation ("that `THERM_ALERT#` comes back with its
+`#`, that the six pin designators are read as six separate words"). Both hold, but
+only under some page-segmentation modes. The measurement is below and it changed the
+engine plan, so the original expectation is kept here only to show it was a guess
+until it was run.
+
+## Next step
+
+Adapt Tesseract's TSV to `Detection` and place `layout_from`'s result into the reader
+as `TextSpan`s. The geometry and the engine are now both measured against the real
+sample images; what remains is the seam between them.
+
+---
+
+# Stage 7B — the engine, measured before it is wired in
+
+Tesseract **5.3.4** was installed without root, entirely on `D:` (see the wrapper's
+own comments at `/mnt/d/mc3-disk/tesseract/tesseract`). It is *not* in the image yet
+and *not* in any dependency file. It exists so the engine's real behaviour could be
+measured, because Stage 7A's two tolerance constants were wrong until measured and
+there was no reason to expect the engine to be better behaved.
+
+## What the engine actually returns
+
+Both sample images were run through every useful page-segmentation mode. The result
+is the single most important finding in this stage:
+
+**No single PSM mode reads the whole pinout diagram.**
+
+| Mode | Designators recovered from `specs/backplane_pinout.png` |
+|---|---|
+| `--psm 3` (auto) | `B14`, `B15` — only the two right-hand ones |
+| `--psm 4` (single column) | `B14` |
+| `--psm 6` (uniform block) | **none at all** |
+| `--psm 11` (sparse) | `B11`–`B16` — all six |
+| `--psm 12` (sparse + OSD) | `B11`–`B16` — all six |
+
+q7's answer is `B14` paired with `THERM_ALERT#`. **`--psm 6`, the mode the Stage 7
+investigation assumed, would have made q7 unanswerable** — it returns the six signal
+labels and no designators whatsoever, so the association `B14 | THERM_ALERT#` cannot
+be formed at any tolerance. psm 3 and psm 4 recover *part* of the row, which is worse
+than none: a partial row looks like a diagram that is merely incomplete.
+
+`--psm 12` was chosen as the primary mode. It reads both sample images completely and
+`--psm 11` produced byte-identical results on both, so the choice is not delicate.
+
+## The geometry, on real engine output
+
+Real TSV rows were parsed to `Detection` and passed to `layout_from` unchanged. On
+`specs/backplane_pinout.png`, `--psm 12`, `image_width=1000`:
+
+```
+layout: 16 lines, 6 associations, 0 rejections, 1 dropped, 0 duplicates
+ASSOC 'B14 | THERM_ALERT#'  <- text lines 5 and 11 at region (515, 150)-(624, 233)
+```
+
+All six pairings are correct, one per column, with no rejection. The measured table is
+regular to about one pixel: designators at `top=150` height 16, labels at `top=222`
+height 10, so the vertical gap is 56 px = 5.6 label heights, comfortably inside the
+`ASSOCIATION_MIN_GAP_FACTOR = 2.0` / `MAX = 12.0` window that Stage 7A retuned from a
+guess of 1.0/6.0. Centre offsets run 0.5–1.0 px, against an allowance of 0.75 x the
+label width. The widest label, `THERM_ALERT#` at 109 px, is 0.109 of the image width
+against a 0.50 ceiling.
+
+On `support/asset_label.jpg` the geometry correctly finds **zero associations** — a
+flat label is not a diagram — and returns the line `'BOARD REVISION REV-C2'` intact,
+which contains q8's answer. Every PSM mode agrees on that line.
+
+## Adapter facts this measurement established
+
+These are the things that would otherwise have been guessed wrong:
+
+1. **The confidence column is a float, not an integer.** Real values are
+   `91.944946`, not `92`. `int()` raises `ValueError` on it — this was hit during the
+   measurement, not predicted. It is a percentage and must be divided by 100.
+2. **Diagram rules arrive as words.** Tesseract reports drawn borders and table rules
+   as level-5 rows whose text is a single space `" "` — not an empty string, so a
+   naive `if not text` check passes them through. On the pinout at `--psm 3`, 15 of 55
+   rows are like this.
+3. **The geometry already handles (2).** `_is_usable` strips and rejects them, and
+   `layout_from` counted all 15 as dropped. The adapter does **not** need its own
+   blank filter; duplicating the rule would be a second place to get it wrong.
+4. **Punctuation-only tokens are dropped too.** The `-` in the title is discarded by
+   the same `any(character.isalnum())` test — correct here, and worth remembering on
+   a page where a lone symbol is the answer.
+5. **The geometry renders lines better than Tesseract's own text output.** At
+   `--psm 6` the plain-text rendering returns `MADE IN MALAYSIA AN`, gluing the logo
+   onto a real line; as separate boxes the geometry keeps them apart. The logo reads
+   `ii` or `AN` at confidence 0.52, only just above `MIN_OCR_CONFIDENCE = 0.50`.
+
+## Timing
+
+Per image per mode, including library load: **0.46–0.85 s** (cold start 0.80 s versus
+0.84 s warm, so the load is not a factor). A three-mode union over a few dozen images
+costs well under a minute against the 600 s index budget. Cost is not the constraint
+that decides the mode; correctness is, and correctness says `--psm 12`.
+
+## What this stage still does not do
+
+- **The engine is not in the image.** The Dockerfile, requirements files and
+  `starter/app/` are untouched by this measurement; nothing under `starter/app/`
+  imports Tesseract.
+- **The seam is not wired.** `image.py` still reports the vision path unavailable.
+  Rule 8 is still satisfied by the existing code.
+- **The adapter does not exist yet.** It is deliberately unwritten: it is now a
+  transcription of five measured facts rather than of a guess, and it should be
+  written as one small verified step.
+
+---
+
+# Stage 7C — the TSV adapter
+
+`starter/app/ingestion/readers/ocr_tsv.py` (new) and
+`tests/test_readers_ocr_tsv.py` (new, **44 tests**). The last of the deferred steps:
+the pure function that turns Tesseract's stdout into `Detection`s. It is the only
+place in the project that knows the engine's output format.
+
+**Where the line falls between it and the geometry.** The adapter drops a row only
+when the *format* says it is not a word — the wrong level, the wrong field count, a
+coordinate that is not a number. It deliberately does **not** decide that a space or
+a lone `-` is not text, because `_is_usable` in the geometry already makes that
+decision for its own documented reason. A second copy of the rule would be a second
+place for it to drift. Measured on the real pinout at `--psm 3`: the adapter passes
+all 15 rule rows through and the geometry drops all 15. Two tests assert both halves
+of that contract.
+
+The other deliberate refusal is repair. A row with the wrong number of fields is
+counted and skipped, never fixed up: rejoining a corrupt row's tail into the text
+field is exactly how a value that appears nowhere in the image would reach the index.
+`skipped_rows` counts only rows that *claimed* to be words, so the large and
+uninteresting number of page/block/paragraph rows does not bury real corruption.
+
+`TsvWords.header_recognised` exists because "no detections" has two causes that must
+not look alike — the engine produced no TSV at all (an error message, a wrong command
+line) versus the image was read and had no words. Collapsing them would let a broken
+invocation pass for a blank page.
+
+## Verified against the real engine
+
+The synthetic fixtures pin the format. The real check is the adapter fed Tesseract's
+actual stdout for both sample images, unmodified:
+
+| Image | psm | header | words | skipped | → lines | assoc | reject |
+|---|---|---|---|---|---|---|---|
+| `backplane_pinout.png` | 12 | ✓ | 48 | 0 | 16 | **6** | 0 |
+| `backplane_pinout.png` | 11 | ✓ | 48 | 0 | 16 | **6** | 0 |
+| `backplane_pinout.png` | 6 | ✓ | 42 | 0 | 10 | 0 | 0 |
+| `asset_label.jpg` | 12 | ✓ | 13 | 0 | 6 | 0 | 0 |
+| `asset_label.jpg` | 11 | ✓ | 13 | 0 | 6 | 0 | 0 |
+| `asset_label.jpg` | 6 | ✓ | 13 | 0 | 6 | 0 | 0 |
+
+The six associations at psm 12/11 are `B11 | GND`, `B12 | SDA`, `B13 | SCL`,
+**`B14 | THERM_ALERT#`**, `B15 | PRSNT#`, `B16 | GND` — identical to the result
+produced earlier by a hand-written parser, which is the point of replacing it. The
+`skipped=0` column is itself evidence: the real output has no malformed rows, so
+nothing is being silently discarded.
+
+The psm 6 row is the one worth staring at: 42 words read, `0 associations`. The
+engine succeeded, the geometry succeeded, and q7's answer is still unreachable. A
+pipeline can be green on every file and still be unable to answer.
+
+## Test results
+
+- `tests/test_readers_ocr_tsv.py` — **44 passed**.
+- Full suite — **654 passed in 69.44s** (was 610; +44).
+
+One test failed on first run and it was the *fixture*, not the code: invalid UTF-8
+was appended to the end of a line, so the undecodable bytes landed inside the text
+field and `'SENTINEL��'` came back. That is the faithful answer — the
+adapter kept the row, replaced the bytes and did not raise, which is exactly the
+walker's contract. The assertion was corrected to expect the damage rather than
+pretend it away, and a second test now covers a whole damaged row not costing its
+neighbours.
+
+## What this stage still does not do
+
+- **The module is not referenced by the application.** Nothing under `starter/app/`
+  imports `ocr_tsv`; it is reachable only from its tests, exactly as `image_geometry`
+  was after Stage 7A. `tests/test_import_graph.py` gained one line so the module is
+  still proven to import by bare name the way the container does.
+- **No subprocess and no engine.** The adapter takes a string. Nothing in it shells
+  out, and nothing has been added to the Dockerfile or any requirements file.
+- **`image.py` is still byte-identical.** Images still report `VISION_UNAVAILABLE`.
+- **Nothing downstream changed.** No extraction, citation or GPU change.
+
+## Next step
+
+Wire the two halves into `image.read`: invoke the engine, parse with
+`words_from_tsv`, call `layout_from`, and emit the result as `TextSpan`s. That step
+is where behaviour changes — images stop reporting `VISION_UNAVAILABLE` — so it needs
+the engine in the image first, which is a Docker change and therefore needs approval.
+
+The open question for that step is what the reader does when the engine is absent:
+the honest options are to keep reporting `VISION_UNAVAILABLE` (this build cannot read
+images) or to treat a missing binary as a failed read, and that choice should be made
+deliberately rather than falling out of whichever `except` runs first.
+
+---
+
+# Stage 7D — the reader wired, and images now read
+
+New: `starter/app/ingestion/readers/ocr_engine.py`, and `image.read` rewritten.
+`tests/test_readers_ocr_engine.py` (new, 25 tests); `tests/test_readers_image.py`
+amended. **The vision path is now live** — an image with an engine present reads
+successfully and produces spans.
+
+## The decision left open at the end of 7C, made deliberately
+
+**A missing engine reports `VISION_UNAVAILABLE`; a present engine that fails reports
+`UNREADABLE`.** The two are properties of different things — one of the build, one of
+the file — and they call for different responses from whoever reads the report.
+`find_engine` therefore returns `None` rather than raising, and `EngineFailed` is
+raised only once an engine has been found. Rule 8 is satisfied on the absent path by
+the same message it always had, so a machine without Tesseract behaves exactly as
+before this stage.
+
+## The engine setting is a command, not a path
+
+Split with `shlex.split`, so it may carry arguments. Not decoration: the container
+runs `tesseract` off `PATH`, while this laptop's rootless install needs
+`sh /mnt/d/mc3-disk/tesseract/tesseract`. Treating it as one opaque path makes the
+second case unexpressible. It also makes the whole chain testable with no engine
+installed — the stand-in is `sys.executable` running a short script, which needs no
+executable bit and no binary.
+
+The image path is passed as one element of an argument vector. **No shell is
+involved**, so a corpus file named `; rm -rf / #.png` is a filename, not a command,
+and there is no quoting rule to get wrong.
+
+## psm 11, not 12 — a trap the measurement caught
+
+`--psm 12` produced byte-identical output to `--psm 11` on both sample images, and
+was the obvious pick. It is the wrong one: mode 12 requests orientation detection and
+so needs `osd.traineddata`. Verified directly by running 12 with only
+`eng.traineddata` present — the engine emits `Failed loading language 'osd'` and
+`Tesseract couldn't load any languages!` before continuing. Depending on a second
+data file to obtain the same bytes is a liability with no upside, so the setting is
+**11**. This also means the image needs only `tesseract-ocr`, not
+`tesseract-ocr-osd`, when the Dockerfile is written.
+
+## End to end, on the real corpus, with the real engine
+
+`image.read` run against both sample files with Tesseract 5.3.4:
+
+| File | status | spans | notes |
+|---|---|---|---|
+| `specs/backplane_pinout.png` | `ok` | 22 | 16 lines + 6 associations |
+| `support/asset_label.jpg` | `ok` | 6 | 6 lines, 0 associations |
+
+`B14 \| THERM_ALERT#` is span 18, located `text lines 5 and 11 at region (515, 150)-(624, 233)`
+— both source boxes named, so the pairing can be checked against the image.
+`BOARD REVISION REV-C2` is span 3 of the label. Neither value was hardcoded anywhere;
+both were read.
+
+The pinout's detail line reads `16 text lines and 6 associations; discarded 1
+detections that were not text` — the discarded one is the lone `-` in the title,
+dropped by the geometry's alphanumeric rule as designed in 7A.
+
+## A boundary checked before it could bite
+
+The spans are now what retrieval searches, so the question is whether their tokens
+survive tokenisation. Measured:
+
+```
+q7 tokens          : [which, backplane, pin, carries, therm, alert, on, the, tq, 40, tq40]
+'B14 | THERM_ALERT#' -> [b14, therm, alert]      overlap: alert, therm
+q8 tokens          : [what, board, revision, is, printed, on, the, asset, label]
+'BOARD REVISION REV-C2' -> [board, revision, rev, c2, revc2]   overlap: board, revision
+```
+
+`normalise` keeps `#` (the contract deletes only `-` `.` `·` `_`), and it is the same
+function applied to answers, so question and corpus text normalise alike. Each
+question's distinctive tokens are present in the span the reader produced. **This is
+token overlap, not a retrieval run** — the full pipeline is Stage 8 — but it is the
+specific failure that would have made the vision work pointless, and it does not
+happen.
+
+## Test results
+
+- `tests/test_readers_ocr_engine.py` — **25 passed**.
+- Full suite — **681 passed in 73.40s** (was 655).
+
+Three things had to be fixed, and one of them was a real defect in the suite rather
+than in the code:
+
+1. **`test_readers_image.py` was host-dependent.** Its 22 tests passed only because
+   this shell has no `tesseract` on `PATH`. In the container they would have taken a
+   different path. An autouse fixture now points `MC3_TESSERACT` at a path that does
+   not resolve, so "this build has no engine" is pinned rather than inherited from
+   the machine. A test that means different things in different places is worse than
+   no test.
+2. **`test_dimensions_are_not_emitted_as_text` could not fail** where it was. With no
+   engine every read returns no spans, so the assertion held for the wrong reason. It
+   now lives in the engine test file, where a read can succeed and the claim has
+   teeth — a successful read of a 1400x900 PNG must contain neither number.
+3. `test_the_detail_states_what_was_recognised` asserted the substring `"vision"`,
+   which the new message no longer contains. The assertion now names the actual
+   cause, `"no OCR engine is installed in this build"`, which is the stronger claim:
+   it pins that the build is blamed rather than the file.
+
+## What this stage still does not do
+
+- **The engine is still not in the image.** `starter/Dockerfile` and every
+  requirements file are untouched. The reader works on this laptop only because
+  `MC3_TESSERACT` is set by hand; with nothing set it reports `VISION_UNAVAILABLE`
+  exactly as before. **Until the Dockerfile changes, the container will not read
+  images.**
+- **No full-pipeline run.** The spans have not been indexed, retrieved or extracted
+  from. Stage 8 is where that happens.
+- **The known noise is still noise.** The asset label's logo reads as `ii` at
+  confidence 0.52, just above `MIN_OCR_CONFIDENCE = 0.50`, and enters the index as a
+  two-character span. Raising the floor would drop genuine text too — real lines sit
+  at 0.51–0.55 — so it is left alone and recorded here rather than tuned away.
+
+## Next step
+
+Add Tesseract to the image. That is a Docker change and needs approval: it means a
+line in `starter/Dockerfile` (`apt-get install -y --no-install-recommends
+tesseract-ocr tesseract-ocr-eng`), roughly 8 MB of packages, and a rebuild. The
+command to check afterwards is `python3 /app/app.py --query-id query_07` with a bare
+environment, confirming the reader finds the engine without `MC3_TESSERACT` set.
+
+
+# Stage 7E — the engine goes into the image
+
+## The change
+
+`starter/Dockerfile` gains one layer, placed immediately after `WORKDIR /app` and
+*before* `COPY models/ /models/`:
+
+```dockerfile
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      tesseract-ocr \
+      tesseract-ocr-eng \
+ && tesseract --version \
+ && rm -rf /var/lib/apt/lists/*
+```
+
+No Python code changed. The reader already looks for `tesseract` through `PATH`
+(`DEFAULT_OCR_ENGINE`), so putting the binary on `PATH` *is* the wiring — there is
+no second place to keep in sync.
+
+## No environment variable is needed, and that was the point
+
+`ocr_engine.py` resolves `DEFAULT_OCR_ENGINE = "tesseract"` with `shutil.which`.
+Because the default is the name apt installs, the container needs no
+`MC3_TESSERACT` at all. That matters for more than tidiness: an image that
+depended on an env var would report `VISION_UNAVAILABLE` the moment the harness
+invoked `app.py` with a clean environment, and the failure would look like a
+missing engine rather than a missing setting. Leaving the variable unset in the
+image also keeps it free for what it was designed for — a development machine
+with the engine unpacked in an unusual place.
+
+## Why this position in the file
+
+Docker caches a layer until one of its inputs changes, and the ordering here is
+deliberate: the engine install depends on neither the weights nor the application
+code, so it sits above both. A Python edit reuses this layer, and the 129 MB
+weights layer beneath it. Placing it after `COPY app/` instead would re-run apt on
+every source change — the slowest possible arrangement, since apt is the only step
+that needs the network.
+
+## Why the version check is inside the layer
+
+`tesseract --version` is not decoration. Without it, a package that installed but
+could not execute — a missing shared library, the usual cause — would produce a
+*successful build* and a corpus-wide `VISION_UNAVAILABLE` discovered only at
+scoring time. With it, the same fault fails the build, where it is cheap and
+attributable. This is the rule-8 obligation ("never silently skip image support")
+expressed as a build-time assertion rather than a runtime hope.
+
+`--no-install-recommends` keeps out the X11, additional image-format and extra
+language packages the default set pulls in; `-eng` is the only language the corpus
+needs (`OCR_LANGUAGE`). The apt lists are dropped in the same `RUN`, because
+removing them in a later layer would leave them in the image anyway.
+
+## Not yet verified
+
+Everything below is a plan, not a result. **The build has not run.**
+
+- **The base image is not fully pulled yet.** See "The base image" below; the
+  rebuild cannot start until it lands.
+- **The layer's installed size is unmeasured.** Expected to be single-digit MB
+  (the engine plus English data), but that is an expectation, not a measurement —
+  it must be read off the built image against the 60 GiB limit.
+- **`apt` on the base has not been exercised.** The image is `ubuntu26.04`; that
+  its sources resolve and that `tesseract-ocr` is available there is untested.
+- **The bare-environment check has not been run.** The verification is
+  `docker run --rm --network none <image> python3 /app/app.py --corpus /app/corpus
+  --query-id query_07 --query "..."` with **no** `MC3_TESSERACT` — confirming the
+  engine is found and the image-bearing question is answerable end to end.
+- **Whether the corpus report changes.** Once the engine is found, image files
+  stop reporting `VISION_UNAVAILABLE` and start contributing spans. That will move
+  retrieval results and must be re-measured, not assumed.
+
+## The base image
+
+The rebuild needs `rocm/pytorch:rocm10.0_ubuntu26.04_py3.14_pytorch_release_2.13.0`
+(~29 GiB unpacked, not the ~48 GB obtainable by assuming containerd keeps both the
+compressed blob and the unpacked copy — measured, it keeps only the unpacked one).
+The pull had downloaded 5 of 7 layers before stalling out earlier; at the time of
+writing it is fetching the remaining 18.6 GiB at ~1.03 MiB/s, which is a
+**local Wi-Fi limit, not a registry one**: the adapter is on 2.4 GHz 802.11n at 97%
+signal, four parallel connections do not beat one, and Docker Hub's CDN and
+Cloudflare test at the same rate. The container is unaffected; the consequence is
+wall-clock, and it is why this stage is written up before it is built.
+
+A third-party registry mirror was considered and rejected: the base image is
+checked by **layer identity**, so a mirror that served a byte-different image
+would disqualify the submission rather than speed it up.
+
+
+# Stage 8A — the whole pipeline, run and scored
+
+## Result
+
+**10/10 exact** on the sample set: every answer matches and every citation set is
+exactly right, with the refusal on query 10 correctly returning an empty answer
+and no citations. Index 8.0s, queries 6.0–9.3s each.
+
+```bash
+cd /mnt/d/rag && source ~/venvs/mc3/bin/activate
+export MC3_TESSERACT=/mnt/d/mc3-disk/tesseract/tesseract
+python3 scripts/score_sample.py --device cpu --model-dir starter/models/bge-small-en-v1.5
+```
+
+This is the first time the pipeline has been run end to end over all ten
+questions. Stages 3–7 tested each part; nothing had run the whole thing.
+
+## The vision path is load-bearing, not decorative
+
+Queries 7 and 8 answer `B14` and `REV-C2`, values that appear in **no text file** —
+they exist only inside `specs/backplane_pinout.png` and `support/asset_label.jpg`.
+Both were answered correctly from the index. The same corpus indexed with
+`MC3_TESSERACT` unset reports `vision_unavailable=2`, drops from 95 chunks to 67,
+and those two questions become unanswerable. The engine is the difference between
+8/10 and 10/10, which is what Stage 7E exists to ship.
+
+## Lexical-only is not a safe fallback — it changes answers
+
+The first run scored **9/10**, and the missing point was query 10. The cause was
+not the refusal logic: the index had silently degraded to lexical-only, because
+`MC3_EMBEDDING_DEVICE='cuda'` was set by default and this laptop has no GPU. The
+application refused to fall back to the CPU on its own — correctly, per rule 7 —
+and indexed without vectors.
+
+Re-run in true hybrid mode, query 10 does not merely improve, it produces a
+*different answer*: lexical-only returns `212` citing `support/rma_parts.xlsx`
+(a confident wrong answer to the unanswerable question), hybrid returns nothing.
+So the vector retriever is not a quality knob that can be dropped under pressure;
+**the two configurations disagree about correctness**, and any future fallback
+that lands in lexical-only must be treated as a behaviour change, not a
+degradation in degree.
+
+**The refusal rule is principled, but its word-overlap test can be defeated — measured.**
+The rule (`answering/refusal.py`) refuses when the winning value is presented as a
+field's value *and* the field's name shares no word with the question. Between the
+two runs **the rule did not change; the winner did**, and that is the whole of the
+difference:
+
+- **Hybrid refuses.** The winning candidate is labelled `lead_time_days`, which
+  shares no word with a question about unit price, so the rule fires.
+- **Lexical-only answers `212`.** The winner comes from the row
+  `part_number=ORR-HSK-1180-A | description=Heatsink, vapour chamber |
+  compatible_with=TQ-40 | unit_cost_usd=212 | lead_time_days=35`. The field name
+  `unit_cost_usd` shares the word **"unit"** with "unit price", so the rule does
+  not fire and the value is answered.
+
+So hybrid gets this question right partly for an incidental reason: it happened to
+rank a differently-labelled candidate first. The rule did **not** identify the
+price question and reject it — the word-overlap test was defeated by a generic
+word. An earlier draft of this note said the lexical-only run "correctly stays
+silent"; that was inference, and checking it against the index showed the
+opposite.
+
+**Residual risk, stated plainly.** `unit_cost_usd` is a genuine near-miss — cost
+is not price, and the real price exists only in the encrypted file — and it passes
+the rule. On a larger corpus, if the top candidate for such a question is a
+`*_cost` or `*_usd` field, the rule will answer it and spend the point. The
+module's docstring already names the assumption this rests on ("field names are
+written in words a question would also use") and the risk of cryptic names making
+a correct answer unreachable; this is that same assumption failing in the
+*opposite* direction, by overlapping too easily. It is recorded rather than
+patched because the module's docstring also documents the three alternatives that
+were measured and rejected, including one that separated all ten samples and was
+rejected for being a statistic fitted to a single negative example — and
+tightening this one on the same evidence would repeat that mistake.
+
+## New tooling: `scripts/score_sample.py`
+
+`AGENTS.md` listed this file as existing. It did not — `scripts/` held only
+`fetch_model.py` — so the number above was first obtained from a throwaway shell
+loop and is now produced by a committed tool.
+
+Two bugs were found in it by running it, both of which produced a *plausible wrong
+number* rather than an error, and both are fixed:
+
+- **Relative paths resolved against the wrong directory.** `app.py` is invoked with
+  its own directory as the working directory, so `--model-dir
+  starter/models/bge-small-en-v1.5` missed, and the run quietly degraded to
+  lexical-only and scored 9/10. Every path argument is now resolved before it
+  reaches a child process.
+- **The index report was discarded.** `app.py` reports on **stderr**, not stdout.
+  The scorer echoed stdout only, so the one line announcing
+  "no embeddings, indexing lexical-only" — the exact degradation above — was
+  invisible. Both streams are now echoed.
+
+That second bug is the more instructive one: the scorer was hiding the failure it
+had been written to expose.
+
+## The scorer deliberately does not hold the answers
+
+Every expected value is read from `sample-questions.json` at run time; nothing is
+hardcoded, so rule 1 holds. Answer comparison imports the application's own
+`normalisation.normalise` rather than reimplementing it, because `AGENTS.md`
+requires one comparison form and a drifted copy would score answers differently
+from the pipeline that produced them. Comparison is exact against the expected
+value or a declared alias — a substring match would let `194` pass as `94` — and a
+substring-only match is labelled "close" without being credited. Citations are
+compared as exact sets, since an extra citation scores zero exactly like a missing
+one. The file lives in `scripts/`, which the Dockerfile does not copy.
+
+## An environment trap worth knowing
+
+`pytest` in this repo fails with **"no tests ran"** and a `FileNotFoundError` from
+its capture plugin, because `~/.zshrc` exports `TMPDIR` onto the 9p mount at
+`/mnt/d`. It reads as a collection failure and is not one. With `TMPDIR=/tmp` the
+same tree gives **681 passed**. Use `TMPDIR=/tmp python3 -m pytest tests/ -q`.
+
+## What this stage does not prove
+
+- **The sample set is not the graded set.** It is 13 files and 95 chunks; the
+  graded corpus is different and larger. 10/10 here is evidence, not a score.
+- **Nothing here ran in the container.** Every number is from the laptop, on CPU.
+  The image, `selfcheck.py` and the GPU are all still unexercised — Stage 7E is
+  written but not built.
+- **The timings are CPU timings.** 9.3s against a 30s budget has real headroom,
+  but ROCm context initialisation per process is not free and is unmeasured. A
+  per-query regression there is the likeliest way this budget is lost.
+- **`docs/` is empty.** `AGENTS.md` describes it as holding architecture, a
+  learning guide and testing notes; none exist yet.
+- **Confidence is unvalidated.** It ranges from 0.27 (query 9) to 1.0 (query 3)
+  while correctness is uniform, so it is not currently a usable signal of whether
+  an answer is right.
+
+## Next step
+
+Build the image once the base finishes pulling, then run
+`selfcheck.py` against the sample corpus — that is the first check of the
+container contract itself (startup, `--index`, one query, output shape, relative
+citations), and it is the nearest thing available to the real harness.
+
+
+# Stage 8B — the corpus hazards, actually present
+
+## The sample corpus has been lying to us on this machine
+
+`README.txt` specifies that the sample corpus contains **`mc3-corpus/archive/` as
+an empty directory** and **`vendor/internal_audit.txt` as chmod 000**. The
+directory is there. The unreadable file is not unreadable — it is an ordinary
+readable file, because the project lives on a 9p/drvfs mount where `chmod` is a
+documented no-op (`AGENTS.md`, verified previously). Every local run so far,
+including the 10/10 in Stage 8A, was therefore measured on a corpus with **both of
+those hazards silently absent**.
+
+That is the failure mode `README.txt` warns about, in its own words: a submission
+"will pass your own testing and fail ours". The number was right and the
+configuration was wrong.
+
+## Verified properly, on a native filesystem
+
+The corpus was copied to `/tmp` (ext4), `chmod 000` applied, and the copy
+confirmed genuinely unreadable (`cat` is refused):
+
+```
+indexed /tmp/mc3-hazard: 12 files, 93 chunks
+  file status: encrypted=1, ok=10, unsupported=1
+  skipped during walk: 1
+```
+
+The unreadable file is skipped, **the walk completes**, and no other file is lost
+— 13 files becomes 12 with `ok` dropping 11 to 10, exactly the one file. **Score
+unchanged at 10/10.** Rule 9 ("never let one bad file abort the corpus walk") holds
+end to end, not merely in the walker's unit tests.
+
+The unit level was checked separately rather than assumed: with `TMPDIR=/tmp`,
+`tests/conftest.py`'s probe finds permissions genuinely enforced and
+`test_walker.py`'s 17 tests **run** rather than skip — including
+`test_unreadable_file_does_not_abort_the_walk` and
+`test_empty_directory_is_recorded_not_an_error`. On the 9p mount those same tests
+skip with a stated reason, which is the honest behaviour and also why the skip
+count must never be read as a pass.
+
+## The habit this establishes
+
+Local green results describe **the corpus as this filesystem presents it**, not
+the corpus as it is. Any hazard whose mechanism is a mode bit, a permission, or a
+mount option has to be reproduced on native storage before it can be claimed as
+covered. `archive/` and the encrypted PDF and the unknown binary are
+filesystem-independent and were already exercised; the permission case was not.
+
+## Next step
+
+Unchanged: build the image and run `selfcheck.py`. Note that `selfcheck.py` copies
+the corpus into the container with `docker cp`, which **does not preserve mode
+bits** either — so the unreadable-file hazard will not be exercised by selfcheck
+on this machine regardless. The real harness's `--cap-drop DAC_OVERRIDE` behaviour
+remains untestable here and must be checked on the notebook.
+
+
+# Stage 8C — the container test sequence, ready but not yet run
+
+Everything here is blocked on one thing: the base image finishing its pull. The
+Dockerfile is written (7E), the local pipeline is verified (8A/8B), and the
+scorer can now read container output directly (`--reuse`), so the moment the base
+lands this is mechanical rather than improvised.
+
+```bash
+cd /mnt/d/rag
+
+# 1. build
+docker build -t mc3:local starter/
+
+# 2. the harness's own checks, in the harness's own order
+python3 selfcheck.py mc3:local mc3-corpus
+
+# 3. all ten questions, inside the container, then scored by the same comparator
+docker run -d --network none --name mc3-test mc3:local
+docker exec mc3-test mkdir -p /app/corpus /app/output
+docker cp mc3-corpus/. mc3-test:/app/corpus
+docker exec mc3-test python3 /app/app.py --index /app/corpus
+python3 - <<'PY'          # drives the ten execs from the sample file
+import json, subprocess
+for q in json.load(open('sample-questions.json'))['queries']:
+    qid = f"query_{q['n']:02d}"
+    subprocess.run(["docker","exec","mc3-test","python3","/app/app.py",
+                    "--corpus","/app/corpus","--query-id",qid,"--query",q['query']],
+                   check=False)
+PY
+docker cp mc3-test:/app/output/. /tmp/mc3-container-out
+python3 scripts/score_sample.py --reuse --output-dir /tmp/mc3-container-out
+```
+
+## What each step is actually testing
+
+- **`--network none` on the build run.** Not decoration: it is how the harness
+  runs, and it is the only way to catch a runtime download. The model must come
+  from `/models/`, which the Dockerfile copies.
+- **`selfcheck.py`** checks the *contract*: startup, the `--index` pass, one query
+  inside 30s, the output file at `/app/output/<query-id>_output.json`, the JSON
+  shape, and that citations are corpus-relative. It runs **one** query, so it
+  cannot tell us whether the answers are right.
+- **step 3** is the one that scores correctness inside the container, which is the
+  combination nothing has yet produced: every number so far is from the laptop.
+
+## What this sequence still cannot prove
+
+- **The GPU path.** No AMD GPU on this machine, so the container will report
+  `MC3_EMBEDDING_DEVICE='cuda' was requested but torch cannot see a GPU` and index
+  **lexical-only**. The embedding model, the ROCm build of torch, the VRAM floor
+  and ceiling, and per-query ROCm init are all unexercised. Expect the container
+  score to read **9/10**, matching the lexicon-only result in 8A, and *not* to be
+  alarmed by it — it is the expected CPU outcome, not a regression.
+- **The unreadable-file hazard.** `docker cp` does not carry mode bits, so the
+  copied-in corpus will have a *readable* `internal_audit.txt` whatever the source
+  looked like.
+- **The 60 GiB size limit.** `docker history` sums layers; the real check is
+  uncompressed image size, and it needs the built image.
+- **Timing headroom.** CPU timings (6–9s) are not ROCm timings.
+
+Stage 9 (the notebook) is where the GPU half gets answered.
+
+
+# Dependency closure verified for Python 3.14
+
+`AGENTS.md` states the risk: the laptop is Python 3.12.3 while the image is
+Python 3.14, and "a package that installs locally may have no 3.14 wheel. Verify
+in the image before committing to a dependency." A compiled dependency with no
+3.14 wheel would need a source build and a toolchain the image does not have, and
+that failure would only appear *after* the base image finished downloading — the
+most expensive possible moment to discover it.
+
+`requirements.txt` declares only two packages, and its comment claims the abi3
+question was already checked against PyPI. **That claim was re-verified
+independently rather than trusted**, and extended past the two named packages to
+the whole unconditional closure, since a transitive compiled dependency is exactly
+what would break a build:
+
+- **transformers 5.19.0** — `py3-none-any`, pure Python, `requires_python >=3.10.0`.
+- **safetensors 0.8.0** — `cp310-abi3-manylinux_2_17_x86_64`, stable ABI, so it
+  installs on 3.14 without a build.
+- **tokenizers 0.23.3** — publishes both abi3 *and* cp314 wheels.
+- The other six — `huggingface-hub 2.2.0`, `numpy 2.5.4`, `packaging 26.3`,
+  `pyyaml 6.0.3`, `regex 2026.9.29`, `typer 0.27.3`, `tqdm 4.70.1` — all carry a
+  3.14-compatible wheel.
+
+transformers declares 257 requirements, but only **9 are unconditional**; the rest
+are extras, which a plain `pip install -r` never pulls.
+
+**What this does and does not settle.** It settles wheel *availability*, which is
+the part that cannot be fixed after the fact. It does not verify that pip resolves
+to these versions inside the image, nor that the install succeeds there — that
+still needs the image, and it is the first thing to watch in the build log. Note
+also that `torch` is deliberately absent from `requirements.txt`: naming it would
+let pip replace the ROCm build with a CPU or CUDA one and quietly cost the run its
+GPU, which is the same failure rule 7 forbids.
+
+## `docs/` is no longer empty
+
+`AGENTS.md` line 110 says `docs/` holds "architecture, learning guide, testing
+notes". It held a `.gitkeep`. All three are now written, and the reason to do it
+now rather than after the container run is that writing them down is what caught
+the mistake in the next section.
+
+- **`docs/architecture.md`** — the pipeline end to end, the two-phase shape and
+  why it is forced, the module map, the budgets, and the layout rule.
+- **`docs/testing.md`** — how to run the suite, what each file covers, the two
+  tests that are unlike the others (`test_index_cli.py` runs the real command
+  line; `scripts/score_sample.py` is deliberately outside the suite), the
+  measured results, and an explicit list of **where the suite's guarantees stop**.
+- **`docs/learning-guide.md`** — the concepts, each grounded in the file it lives
+  in, for someone who has not built a retrieval system before.
+
+Nothing under `starter/app/` was touched, so this adds nothing to the image.
+
+## A robustness gap that turned out not to be one
+
+While listing what remained, I found that `app.py`'s `main()` has **no top-level
+exception guard**, and said so as a gap: any unexpected exception, or an
+uncreatable output directory, kills the process and writes **nothing**. On a
+question that is answered by refusal, an empty response and a crash would score
+the same, so the fix looked obvious — catch broadly and still write
+`{"answer": "", "citations": [], "confidence": 0.0}`.
+
+**That fix would have been wrong, and the contract says so explicitly**
+(`CONTRACT.md` lines 81-82):
+
+> A missing `answer` or a missing `citations` is **malformed and scores zero** —
+> a crashed writer and a considered refusal must not look the same.
+
+Writing an empty answer on an unexpected exception is precisely "making a crashed
+writer look like a considered refusal". On the question that has no answer in the
+corpus it would *gain* a point by claiming a judgement the system never made.
+
+Checking further, the behaviour is already correct and deliberate:
+
+- `answer()` catches its **expected** failures — `IndexUnavailable`,
+  `IndexIncompatible`, `HybridUnavailable` — and returns `("", [], 0.0)`, each
+  with a stderr line naming the cause. The comment on the first of these already
+  cites the contract clause above.
+- `tests/test_index_cli.py` pins the contract on the failure paths as well as the
+  happy one: three required keys, filename from `--query-id`, a missing index, a
+  stale index, a missing `--query-id`. Its module docstring quotes the same clause.
+- An **unexpected** exception is left to crash. That asymmetry is the design.
+
+So `main()` stays unguarded. The residual is real but different from what I first
+said: the only failures that reach it are unforeseen bugs, and those *should* be
+loud. Correcting this mattered more than the original claim, because "add a catch-all
+so we always write a file" is a tempting change that a future reader — or I — could
+make in good faith and quietly lose a point to.
+
+**Lesson for the notes:** when an output contract has a term for a failure mode,
+read what it says that term is *for* before writing code that produces it.
+
+## Baseline re-verified, and one more reason `TMPDIR` matters
+
+`TMPDIR=/tmp ~/venvs/mc3/bin/python -m pytest tests/ -q` → **681 passed, 0
+skipped, 61.9 s**, on an unchanged tree.
+
+Zero skips is itself the result. `tests/conftest.py` probes whether `chmod 000`
+genuinely denies reads in the temp location before running the permission tests,
+and skips with a stated reason when it does not — because a test that cannot fail
+reports safety that does not exist. Measured directly:
+
+| location | filesystem | `chmod 000` enforced |
+|---|---|---|
+| `/tmp` | ext4 | **yes** |
+| `/mnt/d/mc3-disk/tmp` | drvfs/9p | no |
+| `/mnt/d/rag` | drvfs/9p | no |
+
+So `TMPDIR=/tmp` is load-bearing for **two independent reasons**, and the second
+was not previously recorded: besides avoiding the capture-plugin teardown crash
+described in [[pytest-tmpdir-9p]], it is what decides whether the unreadable-file
+tests test anything at all. Both are now in `docs/testing.md`.
+
+## Container phase still blocked
+
+The base image is still pulling. Progress is measured by the growth of the data
+disk rather than by the pull log, because `docker pull`'s progress lines are not
+reaching the log file (only the discrete state transitions are):
+
+- 7 layers, 5 already present, `b5d678c07f41` complete;
+- the remaining layer is `1e78e706bbca` at 19032.4 MiB — the one that matters;
+- internal `/var/lib/docker` usage at last sample **8.91 GiB**, growing.
+
+Nothing in the container phase — the build, `selfcheck.py`, the ten questions in
+the image, Stage 9's GPU and VRAM work — can start until it lands, and at the
+measured rate it is a multi-hour wait on an ~11 Mbit/s link that nothing local can
+improve.
+
+**Rate measured properly**, rather than inferred: sampled the data disk's internal
+usage 326 s apart — grew **412 MiB, i.e. 1.26 MiB/s**, with
+`/var/lib/docker` at **8.72 GiB of a ~29 GiB target**. That puts the remaining wait
+at roughly **4–5 hours**. The earlier figure of 1.23 MiB/s was the whole Wi-Fi
+adapter, so the pull is still taking effectively the entire link.
+
+## The local 10/10 needs an environment variable, and drops to 8/10 without it
+
+Re-scoring end to end for fresh timings produced **8/10**, failing queries 7 and 8,
+and the index report said why without being asked:
+
+```
+file status: encrypted=1, ok=9, unsupported=1, vision_unavailable=2
+not indexed -> vision_unavailable: specs/backplane_pinout.png
+not indexed -> vision_unavailable: support/asset_label.jpg
+```
+
+**The OCR engine was not found.** A fresh shell does not export `MC3_TESSERACT`,
+and the local engine is a hand-unpacked tesseract 5.3.4 at
+`/mnt/d/mc3-disk/tesseract/tesseract` (a wrapper that sets `TESSDATA_PREFIX`).
+`tesseract` is not on `PATH` either, so `which tesseract` reports it missing and
+reads as a broken install rather than an unset variable. With it supplied:
+
+```
+MC3_TESSERACT=/mnt/d/mc3-disk/tesseract/tesseract \
+TMPDIR=/tmp ~/venvs/mc3/bin/python scripts/score_sample.py \
+    --corpus mc3-corpus --model-dir starter/models/bge-small-en-v1.5 --device cpu
+```
+
+→ **10/10 exact.** Index 7.7 s, 95 chunks, 13 files (11 ok, 1 encrypted,
+1 unsupported); queries **6.7–10.9 s**.
+
+**This is a development-machine trap only, and worth being precise about why.**
+In the container tesseract is installed system-wide by `apt-get` and the reader
+finds it with no environment variable set — that is the property the Dockerfile
+asserts at build time with `tesseract --version`. Nothing in the shipped image
+depends on `MC3_TESSERACT` being set. But on this laptop the difference between
+10/10 and 8/10 is one unexported variable, and the failure is *quiet*: two
+plausible wrong answers rather than a named missing capability. That is the same
+class of silent degradation the lexical-only row already demonstrated.
+
+The per-query times are the useful number for the budget: **6.7–10.9 s on CPU,
+model load included**, against a 30 s limit — and model load is inside each query
+because every query is a fresh process. The container should be faster still on
+the GPU, but this is the first evidence that the per-question budget has real
+headroom rather than being met by luck.
+
+One gotcha found while chasing this: `score_sample.py` defaults `--output-dir` and
+`--index-dir` to `tempfile.gettempdir()`, **which follows `TMPDIR`**. A run with
+`TMPDIR=/tmp` writes to `/tmp/mc3-score-output`, leaving older files in
+`/mnt/d/mc3-disk/tmp/mc3-score-output` looking current. Pass the flags explicitly
+when comparing runs. All of the above is now written up in `docs/testing.md`.
+
+
+

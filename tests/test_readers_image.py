@@ -1,13 +1,19 @@
-"""Tests for the image reader.
+"""Tests for the image reader's own job: the header, and the outcome it picks.
 
-This reader's contract is unusual: it is correct when it returns *no* text.
-Its job is to recognise an image and state plainly that this build cannot read
-it, so the tests are mostly about what it refuses to do.
+This reader's contract has two halves. The first is that it recognises an image
+and states plainly what it found, and the second -- unchanged from before there
+was any engine -- is that it never invents a span. A fabricated caption would
+flow into the index, be retrieved, and be cited, and nothing downstream could
+tell it apart from text that was really in the file. So the assertions below
+check ``spans == ()`` on every path that does not end in a successful read.
 
-The one thing that must never happen is an invented span. A fabricated caption
-would flow into the index, be retrieved, and be cited -- and nothing downstream
-could tell it apart from text that was really in the file. So the assertions
-below check ``spans == ()`` on every path, not just the happy one.
+**The engine is forced absent throughout this file.** Everything here is about
+what the reader does *without* one, and that must not depend on whether the
+machine running the tests happens to have Tesseract installed -- otherwise the
+suite would assert one thing on a laptop and another in the container, and a
+test that means different things in different places is worse than no test. The
+fixture below pins it. The engine-present path, and the recognition itself, are
+tested in ``test_readers_ocr_engine.py``, which supplies a stand-in engine.
 """
 
 from __future__ import annotations
@@ -15,9 +21,21 @@ from __future__ import annotations
 import struct
 
 import pytest
+from config import OCR_ENGINE_ENV
 from document_fixtures import jpeg_bytes, png_bytes
 from ingestion.readers import image, read_file
 from models import MediaType, ReadStatus
+
+
+@pytest.fixture(autouse=True)
+def engine_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the engine setting at nothing, whatever the host has installed.
+
+    A path that does not resolve makes ``find_engine`` return ``None`` rather
+    than falling back to the name on ``PATH``, which is exactly the "this build
+    has no engine" state these tests are about.
+    """
+    monkeypatch.setenv(OCR_ENGINE_ENV, "/nonexistent/tesseract-for-tests")
 
 
 class TestPngHeader:
@@ -115,6 +133,8 @@ class TestReaderContract:
 
         "Unsupported file" would leave a reader unable to tell whether the
         image was opened and understood, or skipped without being looked at.
+        The detail has to name the *build* as the reason, too: the file is
+        fine, and blaming it would send someone to inspect a healthy image.
         """
         files = build_corpus({"specs/pinout.png": png_bytes(width=1400, height=900)})
 
@@ -122,21 +142,20 @@ class TestReaderContract:
 
         assert "1400x900" in result.detail
         assert "PNG" in result.detail
-        assert "vision" in result.detail.lower()
+        assert "no OCR engine is installed in this build" in result.detail
 
-    def test_dimensions_are_not_emitted_as_text(self, build_corpus) -> None:
-        """Metadata is not corpus content and must not become searchable.
+    def test_a_missing_engine_is_what_causes_vision_unavailable(self, build_corpus) -> None:
+        """The status is attributable to the build, not to the file.
 
-        ``1400`` is a fact about a file, not something the corpus says. Putting
-        it in a span would let a question it has nothing to do with match this
-        file and cite it -- and every extra citation scores zero.
+        Pinned because the two are easy to conflate: a reader that reported
+        every image as unreadable would look identical from the outside, and
+        would blame a corpus of perfectly good images.
         """
         files = build_corpus({"specs/pinout.png": png_bytes(width=1400, height=900)})
 
         result = read_file(files["specs/pinout.png"])
 
-        assert result.spans == ()
-        assert result.text == ""
+        assert result.status is ReadStatus.VISION_UNAVAILABLE
 
     def test_a_jpeg_is_recognised_too(self, build_corpus) -> None:
         files = build_corpus({"support/asset_label.jpg": jpeg_bytes(width=1200, height=800)})

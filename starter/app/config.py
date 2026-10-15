@@ -73,6 +73,200 @@ CELL_SEPARATOR = " | "
 #: embedded colour profile can push it well past 4 KiB.
 MAX_IMAGE_HEADER_BYTES = 64 * 1024
 
+# --- Image layout -----------------------------------------------------------
+#
+# What ``ingestion/readers/image_geometry.py`` uses to decide which recognised
+# text belongs with which. None of these is a fact about images; every one is a
+# tolerance, so each says what it is protecting against and what it costs when
+# it is wrong. They are all deliberately conservative: a tolerance set too tight
+# loses a pairing, which costs one answer, while one set too loose invents a
+# relationship the image does not state, which is indistinguishable downstream
+# from a relationship that is really there.
+
+#: Detections scoring below this are not treated as text at all.
+#:
+#: Confidence here is on a 0..1 scale, so an adapter for an engine reporting
+#: percentages -- Tesseract's TSV confidence column is 0..100 -- has to divide
+#: before handing its output over. The threshold exists because the noise an
+#: image produces (barcode stripes, ruling lines, ringing around lettering)
+#: comes back as text-shaped detections at near-zero confidence, and those would
+#: otherwise be indexed as words the corpus does not contain.
+MIN_OCR_CONFIDENCE = 0.50
+
+#: How much of the smaller of two same-text boxes must overlap to call them one
+#: detection.
+#:
+#: The ratio is against the *smaller* box rather than the union, so a detection
+#: nested inside another is still recognised as the same text. Measured against
+#: the union, a small box inside a large one scores low and survives as a
+#: duplicate -- which would then be grouped into the same line and counted
+#: twice in the text.
+DUPLICATE_BOX_OVERLAP = 0.60
+
+#: How much two boxes must overlap vertically to be read as one line of text.
+#:
+#: An engine may report words or whole lines, and this is what makes one code
+#: path handle both. Half the shorter height tolerates the usual wobble in
+#: detected baselines without merging two lines that merely touch.
+LINE_VERTICAL_OVERLAP = 0.50
+
+#: How far apart two boxes on one baseline may sit horizontally and still be
+#: read as one line, as a multiple of the shorter box's height.
+#:
+#: Vertical overlap alone is not enough to group a line, and getting this wrong
+#: is the expensive mistake in either direction. Every label on a diagram shares
+#: a baseline with the labels in the other columns, so grouping without this
+#: would fuse a whole row into one long line -- which is then too long to be a
+#: candidate, losing every pairing on the image at once. Set too tight, the
+#: opposite: a widely spaced label and value split into two lines, which costs a
+#: little and is why the tolerance leans towards splitting.
+LINE_MAX_HORIZONTAL_GAP_FACTOR = 1.50
+
+#: The most words an *identifier* may hold -- the token above, whose label is
+#: being sought.
+#:
+#: One. An identifier is a single unbroken code: a designator, a reference, a
+#: part number. A label is a short phrase and may run to several words, but the
+#: thing a label hangs off does not.
+#:
+#: This is the strongest of the length rules and it is doing most of the work.
+#: The most dangerous layout in an image is a title block -- a stack of evenly
+#: spaced lines, all centred or all left-aligned, four to eight text heights
+#: apart. That spacing sits inside the association band below, and its lines are
+#: too similar in width for the centring test to separate, so nothing else here
+#: stops one line of a title block being read as an identifier and the next as
+#: its label. What does stop it is that no line of a title block is one word.
+#:
+#: The cost is a two-word identifier -- ``PIN 14`` rather than ``J14`` -- going
+#: unpaired. That is a missing association rather than an invented one, which is
+#: the side this whole module errs towards.
+MAX_IDENTIFIER_WORDS = 1
+
+#: The most words a *label* may hold -- the token below.
+#:
+#: Four, to admit short signal names and their like while excluding prose. A
+#: paragraph of running text sits under a diagram often enough to matter, and a
+#: pin paired with a sentence would be a relationship nothing in the image
+#: draws.
+MAX_LABEL_WORDS = 4
+
+#: How wide a token may be, as a fraction of the image, and still count.
+#:
+#: Word count alone misses a short but very wide heading -- a single large word
+#: spanning the full width, or three of them. Skipped when the caller does not
+#: know the image width, which is why the reader always passes the width it read
+#: from the header.
+MAX_ASSOCIATION_WIDTH_FRACTION = 0.50
+
+#: The smallest and largest gap between an identifier and its label, as a
+#: multiple of the smaller of the two text heights.
+#:
+#: **These two numbers are measured, not chosen.** The sample pinout was decoded
+#: pixel by pixel (the local venv has no image library and none may be
+#: installed): its pin boxes run from y=120 to y=190 at six columns 150px apart,
+#: the designator inside each box is 16px tall at y=150-165, and the signal
+#: label beneath is 10px tall at y=222-231. The gap a leader line spans is
+#: therefore 57px, which is 5.7 times the smaller text height. The band below
+#: brackets that figure with room on both sides.
+#:
+#: The floor is what separates a *diagram* relationship from ordinary line
+#: spacing, and it has to clear the spacing a text block actually uses. Adjacent
+#: lines of the sample's asset label are roughly 1.3 text heights apart, and
+#: lines of an ordinary paragraph less; a leader line spans several. Setting the
+#: floor at two text heights excludes line spacing and admits the measured 5.7.
+#:
+#: The ceiling stops a token at the top of an image pairing with one at the
+#: bottom just because their columns line up. Twelve, rather than the measured
+#: 5.7, because the measurement is of one image: a tighter ceiling would start
+#: rejecting correct pairings on any diagram drawn with more air in it, and the
+#: rules that exclude headings and prose are what actually guard this end.
+ASSOCIATION_MIN_GAP_FACTOR = 2.0
+ASSOCIATION_MAX_GAP_FACTOR = 12.0
+
+#: How far off-centre a label may sit, as a fraction of the wider of the two
+#: boxes.
+#:
+#: A leader line drops straight down, so the label is expected under the
+#: identifier. The slack is generous because detection boxes are ragged: a long
+#: label centred on a short identifier can still have its centre displaced by
+#: several characters.
+ASSOCIATION_MAX_CENTRE_OFFSET_FRACTION = 0.75
+
+#: How much closer the best candidate must be than the runner-up before it is
+#: chosen at all, as a multiple of the smaller of the two text heights.
+#:
+#: This is the rule that makes an ambiguous diagram say nothing. Two labels
+#: under one identifier -- a wrapped label split into two boxes, or two short
+#: labels side by side -- are within a hair of each other, and picking the
+#: nearer would be a coin toss presented as a fact. The tie is settled by
+#: refusing both.
+ASSOCIATION_AMBIGUITY_FACTOR = 1.0
+
+# --- The OCR engine ---------------------------------------------------------
+
+#: The engine command, resolved on ``PATH``.
+#:
+#: The container installs Tesseract with apt, so the bare name is enough there.
+#: It is a name rather than a path so that nothing in the shipped code knows
+#: where a particular machine keeps its copy.
+DEFAULT_OCR_ENGINE = "tesseract"
+
+#: Where to find the engine instead, when it is not on ``PATH``.
+#:
+#: Desperately needed during development and not only for convenience. Without
+#: it, whether the image reader succeeds depends on whether the machine running
+#: the tests happens to have Tesseract installed -- so the suite would assert
+#: one thing on a laptop and another in the container, and a test that means
+#: different things in different places is worse than no test. Setting this
+#: makes the engine's presence an explicit input.
+OCR_ENGINE_ENV = "MC3_TESSERACT"
+
+#: The recognition language, and the only one the image ships.
+#:
+#: The corpus is English. Naming it explicitly also stops the engine picking a
+#: language from the environment, which would make the same file read
+#: differently on two machines.
+OCR_LANGUAGE = "eng"
+
+#: Tesseract's page-segmentation mode: 11, "sparse text".
+#:
+#: **Measured, and the measurement overturned the obvious choice.** The sample
+#: pinout's six pin designators are the whole reason the image matters -- q7
+#: asks which pin carries a particular signal -- and how many of them come back
+#: depends entirely on this number:
+#:
+#: ==========  ==========================================================
+#: mode        designators recovered from ``specs/backplane_pinout.png``
+#: ==========  ==========================================================
+#: 3           ``B14``, ``B15`` -- the right-hand two only
+#: 4           ``B14``
+#: 6           **none**; the mode assumed before this was measured
+#: 11          ``B11``-``B16``, all six
+#: 12          ``B11``-``B16``, all six
+#: ==========  ==========================================================
+#:
+#: Mode 6 is the trap. It reads all six signal labels and no designators at all,
+#: so the pairing the question turns on cannot be formed at any tolerance -- a
+#: pipeline that is green on every file and simply cannot answer. Modes 3 and 4
+#: are worse, because a *partial* row looks like a merely incomplete diagram
+#: rather than a failed read.
+#:
+#: 11 rather than 12, despite identical output on both sample images, because 12
+#: requests orientation detection and so needs ``osd.traineddata``. Verified by
+#: running 12 with only ``eng.traineddata`` present: the engine reports
+#: ``Failed loading language 'osd'`` and ``Tesseract couldn't load any
+#: languages!`` before carrying on. Depending on a second data file to get the
+#: same bytes is a liability with no upside.
+OCR_PAGE_SEGMENTATION_MODE = 11
+
+#: How long the engine may run on one image before it is killed.
+#:
+#: Tesseract takes well under a second on the sample images, so this is not a
+#: performance budget -- it is a guard against a hang. A wedged child process
+#: would otherwise consume the whole 600-second indexing pass and every second
+#: of the per-question allowance, turning one unreadable file into a failed run.
+OCR_TIMEOUT_SECONDS = 20.0
+
 # --- Chunking ---------------------------------------------------------------
 
 #: The largest chunk the index will store.

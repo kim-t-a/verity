@@ -11,6 +11,33 @@ FROM rocm/pytorch:rocm10.0_ubuntu26.04_py3.14_pytorch_release_2.13.0
 
 WORKDIR /app
 
+# The vision reader runs a real OCR binary as a child process, and the
+# evaluation container has no network, so the engine must be *in* the image --
+# otherwise every image in the corpus comes back VISION_UNAVAILABLE and the
+# questions whose answer is only in a picture are unanswerable.
+#
+# apt rather than a Python package because ocr_engine.py resolves the engine
+# through PATH and execs it. It looks for `tesseract` by default (config
+# DEFAULT_OCR_ENGINE), so installing it here is the whole wiring: no
+# MC3_TESSERACT override is needed inside the image, and the env var stays free
+# for a development machine that has the engine unpacked somewhere unusual.
+#
+# Placed above the weights copy so that it caches. Editing a Python file reuses
+# this layer, and it only invalidates when the engine itself changes.
+#
+# --no-install-recommends avoids the X11, extra image-format and additional
+# language packs the default set pulls in; `-eng` is the only language the
+# corpus needs (config OCR_LANGUAGE). The version check makes a broken install a
+# build failure rather than a corpus-wide VISION_UNAVAILABLE discovered at
+# scoring time. The lists are dropped in this same layer so they do not persist
+# into the image and count against the size limit.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      tesseract-ocr \
+      tesseract-ocr-eng \
+ && tesseract --version \
+ && rm -rf /var/lib/apt/lists/*
+
 # ⚠️ SHIP YOUR WEIGHTS IN THE IMAGE. Your container has NO outbound network
 # access during evaluation -- it runs on an internal Docker network with no
 # route off the box. Code that downloads a model at evaluation time will hang
