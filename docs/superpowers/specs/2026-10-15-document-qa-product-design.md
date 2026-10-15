@@ -85,6 +85,8 @@ This is the single most important structural consequence of the pivot.
 | D12 | Duplicate uploads: **skip by sha256, reuse existing chunks** | Saves embedding cost; makes accidental double-uploads harmless. |
 | D13 | Clarification trigger: **retrieval rule signals, model decides** | Testable detection combined with judgement; loggable. |
 | D14 | Evaluation against **real documents supplied by the developer** | The MC3 corpus is engineered around literal-value answers and would flatter the system. |
+| D15 | The product is named **Verity**; Python package `verity`, database `verity` | Short, pronounceable, and states the promise — answers you can verify. |
+| D16 | **`AGENTS.md` is rewritten for the product**; challenge material moves to `legacy/` | It currently declares the challenge contract as this repo's source of truth, which is now false and actively misleading. |
 
 ---
 
@@ -539,18 +541,27 @@ panel, Trace panel.
 
 ### Repository layout
 
+One installable package, `verity`, with one subpackage per process:
+
 ```
 backend/
-  engine/     parsers, chunking, retrieval   ← ported from starter/app
-  api/        FastAPI
-  worker/     ingestion
-  db/         schema + migrations
+  pyproject.toml
+  verity/
+    engine/     parsers, chunking, retrieval   ← ported from starter/app
+    api/        FastAPI
+    worker/     ingestion
+    db/         schema + migrations
   tests/
-frontend/     React
+frontend/       React
 docker-compose.yml
 docs/
-legacy/       CONTRACT.md, brief, mc3-corpus — kept for reference
+legacy/         CONTRACT.md, brief, mc3-corpus — kept for reference
 ```
+
+The engine has **no third-party dependencies** — PDF, DOCX and XLSX parsing are
+hand-written against `zipfile` and `xml.etree` (verified). Only the deleted embedding
+layer needed `transformers`. Extraction is therefore low-risk: there is no dependency
+graph to untangle alongside the imports.
 
 Restructure **in place**, keeping git history and the engine. Challenge material moves to
 `legacy/` rather than being deleted: it documents why the code looks as it does, and the
@@ -563,14 +574,16 @@ excellent ingestion robustness tests.
 
 To resolve before or during Phase 1:
 
-1. **The product's name.** Not yet chosen. Affects package name, database name, and UI.
-2. **The agent's system prompt.** A real piece of writing, to be done deliberately rather
+1. **The agent's system prompt.** A real piece of writing, to be done deliberately rather
    than bolted on. It encodes the citation rules, the clarification policy, and the
    refusal policy — it is where I1–I4 are actually enforced against the model.
-3. **The clarification signal threshold.** Which retrieval signal, and what value.
+2. **The clarification signal threshold.** Which retrieval signal, and what value.
    Tunable; start with top-two scores within 15% and observe.
-4. **Whether `AGENTS.md` is rewritten for the product or kept as challenge history.**
-   It currently describes the challenge as the source of truth.
+3. **Which NVIDIA model** for generation and which for embeddings. Determined by what
+   Phase 0 finds available and its measured limits.
+
+Resolved since drafting: the product name (D15, **Verity**) and the fate of `AGENTS.md`
+(D16, rewritten for the product).
 
 ---
 
