@@ -7,9 +7,10 @@ tolerated any of them would return a confident, arbitrary ranking and never
 say so. Absence of a score is noticed; a meaningless score is not.
 
 The tests that assert *ranking* verify arithmetic and ordering, not quality.
-The only embedding backend available is the hashing stand-in, which has no
-notion of meaning, so nothing here can show that dense retrieval finds
-anything keyword retrieval would miss. That claim waits for a real model.
+Embedding is stubbed out: a backend that returns vectors a test chose cannot
+show that dense retrieval finds anything keyword retrieval would miss. That
+claim waits for a real model, and belongs to the evaluation suite rather than
+here.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ import pytest
 
 from verity.engine.chunkstore import ChunkIndex, build_manifest, load, save
 from verity.engine.config import RETRIEVAL_LIMIT
-from verity.engine.embeddings.hashing import HashingEmbedder
 from verity.engine.models import Chunk, MediaType
 from verity.engine.retrieval import Retriever
 from verity.engine.retrieval.keyword import KeywordRetriever
@@ -431,7 +431,7 @@ def test_a_query_vector_of_the_wrong_width_is_refused_not_truncated() -> None:
         retriever.search("question")
 
 
-# --- Through the store, and with the only backend that exists ---------------
+# --- Through the store -------------------------------------------------------
 
 
 def test_a_saved_index_reloads_and_remains_searchable(tmp_path) -> None:
@@ -440,9 +440,16 @@ def test_a_saved_index_reloads_and_remains_searchable(tmp_path) -> None:
     This is the sequence the container actually performs -- ``--index`` writes
     the vectors and each question process reads them -- and it is the one place
     a float-packing or ordering mistake would show up.
+
+    The provider is a stub on purpose. What is under test is the round trip
+    through ``save``/``load``, so the vectors must be ones this test chose and
+    can predict; a real model would make the assertion depend on the model
+    rather than on the store.
     """
-    embedder = HashingEmbedder(dimension=64)
     chunks = [chunk("thermal throttle engaged", rel_path="logs/a.log"), chunk("nothing here", rel_path="b.txt")]
+    embedder = StubProvider(
+        {"thermal throttle engaged": axis(0), "nothing here": axis(1)},
+    )
     index = index_of(
         chunks,
         embedding_vectors(embedder, chunks),
@@ -458,22 +465,6 @@ def test_a_saved_index_reloads_and_remains_searchable(tmp_path) -> None:
 
     assert results
     assert results[0].rel_path == "logs/a.log"
-
-
-def test_the_hashing_backend_satisfies_the_protocol_it_was_checked_against() -> None:
-    """The stand-in must be usable through the same door a real backend will be."""
-    embedder = HashingEmbedder(dimension=32)
-    chunks = chunks_named("first.txt", "second.txt")
-    index = index_of(
-        chunks,
-        embedding_vectors(embedder, chunks),
-        provider_id=embedder.model_id,
-        dimension=embedder.dimension,
-    )
-
-    results = VectorRetriever(index, embedder).search("text of first.txt")
-
-    assert results[0].rel_path == "first.txt"
 
 
 def embedding_vectors(provider, chunks: list[Chunk]) -> list[list[float]]:

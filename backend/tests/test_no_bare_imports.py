@@ -61,3 +61,20 @@ def bare_import_offenders(root: Path) -> list[str]:
 def test_no_engine_module_imports_a_bare_neighbour() -> None:
     offenders = bare_import_offenders(ENGINE)
     assert offenders == [], f"bare imports in the engine: {offenders}"
+
+
+def test_engine_imports_stranger_modules_only_from_the_standard_library() -> None:
+    """The engine's zero-dependency property is load-bearing, so it is tested."""
+    allowed = {"verity", *BARE_NAMES}
+    stdlib = {
+        "__future__", "array", "collections", "csv", "dataclasses", "datetime",
+        "enum", "hashlib", "io", "json", "math", "os", "pathlib", "re", "shlex",
+        "shutil", "stat", "subprocess", "sys", "time", "typing", "unicodedata",
+        "xml", "zipfile", "zlib",
+    }
+    offenders: list[str] = []
+    for source in sorted(ENGINE.rglob("*.py")):
+        for root in imported_roots(source):
+            if root not in stdlib and root not in allowed:
+                offenders.append(f"{source.relative_to(ENGINE)} imports {root!r}")
+    assert offenders == [], f"third-party imports in the engine: {offenders}"
