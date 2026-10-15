@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verity"
+version = "0.1.0"
+description = "Ask your documents. Answers with verifiable citations."
+requires-python = ">=3.12"
+# The engine is pure standard library on purpose: hand-written parsers for
+# PDF, DOCX and XLSX mean there is no dependency graph to untangle, and no
+# transitive package that can change what a citation means.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.setuptools.packages.find]
+include = ["verity*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Carried over from the root pytest.ini this replaces. A test that skipped --
+# for instance because the filesystem does not enforce chmod -- must be
+# visible rather than silently counted as a pass.
+addopts = "-ra"
