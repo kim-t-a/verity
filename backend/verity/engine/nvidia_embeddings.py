@@ -57,8 +57,8 @@ class NvidiaEmbeddingProvider:
     def __init__(
         self,
         *,
-        model_id: str = "nvidia/embed-qa-4",
-        dimension: int = 384,
+        model_id: str = "nvidia/nemotron-3-embed-1b",
+        dimension: int = 2048,
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 30.0,
