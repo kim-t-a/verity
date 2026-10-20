@@ -131,3 +131,25 @@ class FakeProvider:
             "refusal",
             reason="no more actions configured in FakeProvider",
         )
+
+
+class FakeEmbeddingProvider:
+    """Deterministic fake embedding provider for tests.
+
+    Returns the same vector for every input. Satisfies the
+    :class:`~verity.engine.embeddings.EmbeddingProvider` Protocol.
+    """
+
+    def __init__(self, dimension: int = 4) -> None:
+        self._dimension = dimension
+
+    @property
+    def model_id(self) -> str:
+        return "fake-embedding-provider"
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self._dimension for _ in texts]

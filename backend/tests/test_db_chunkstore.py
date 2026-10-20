@@ -34,6 +34,18 @@ def _connect() -> psycopg2.extensions.connection:
     )
 
 
+@pytest.fixture(autouse=True)
+def clean_all_data(db_conn: psycopg2.extensions.connection):
+    """Remove all documents, chunks, and versions before each test so tests
+    don't collide with data left by other test files."""
+    with db_conn.cursor() as cur:
+        cur.execute("DELETE FROM chunks")
+        cur.execute("DELETE FROM document_versions")
+        cur.execute("DELETE FROM documents")
+    db_conn.commit()
+    yield
+
+
 @pytest.fixture
 def db_conn() -> psycopg2.extensions.connection:
     """Database connection, or skip if PostgreSQL is not running."""

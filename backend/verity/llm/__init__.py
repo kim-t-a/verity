@@ -5,6 +5,6 @@ loop is written against, plus a hand-written :class:`~verity.llm.provider.FakePr
 for tests. A real NVIDIA-backed provider can be swapped in later.
 """
 
-from verity.llm.provider import LLMAction, LLMProvider, FakeProvider
+from verity.llm.provider import LLMAction, LLMProvider, FakeProvider, FakeEmbeddingProvider
 
-__all__ = ["LLMAction", "LLMProvider", "FakeProvider"]
+__all__ = ["LLMAction", "LLMProvider", "FakeProvider", "FakeEmbeddingProvider"]
