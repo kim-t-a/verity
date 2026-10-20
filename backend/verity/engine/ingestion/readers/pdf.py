@@ -100,17 +100,38 @@ def is_encrypted(data: bytes) -> bool:
     return _ENCRYPT_PATTERN.search(data) is not None
 
 
-def _load_objects(data: bytes) -> dict[int, bytes]:
-    """Index every ``N 0 obj ... endobj`` body by object number."""
-    objects: dict[int, bytes] = {}
+def _load_objects(data: bytes) -> dict[int, tuple[int, int]]:
+    """Index every ``N 0 obj ... endobj`` by object number, storing offsets.
+
+    Only the first declaration of each object number is kept. Object headers
+    can appear inside content streams (a producer may embed bytes that look
+    like ``N 0 obj``), and a later fake declaration must not overwrite the real
+    one found earlier in the file. Storing ``(start, end)`` offsets rather than
+    slicing the body out at discovery time means a malicious PDF that declares
+    hundreds of objects but closes only the last one does not make one
+    full-document slice per object -- quadratic memory for a linear input. The
+    body is sliced once, at the call site that actually needs it.
+    """
+    objects: dict[int, tuple[int, int]] = {}
     for match in _OBJECT_PATTERN.finditer(data):
         number = int(match.group(1))
+        if number in objects:
+            continue
         start = match.end()
         end = data.find(b"endobj", start)
         if end < 0:
             end = len(data)
-        objects[number] = data[start:end]
+        objects[number] = (start, end)
     return objects
+
+
+def _object_body(data: bytes, objects: dict[int, tuple[int, int]], number: int) -> bytes:
+    """Return the body of object ``number`` from stored offsets, or ``b""``."""
+    span = objects.get(number)
+    if span is None:
+        return b""
+    start, end = span
+    return data[start:end]
 
 
 def _flate_expand(raw: bytes) -> bytes | None:
@@ -251,7 +272,7 @@ def _decode_show(operand: bytes, cmap: dict[int, str], two_byte: bool) -> str:
     return "".join(pieces)
 
 
-def _page_order(objects: dict[int, bytes]) -> list[int]:
+def _page_order(data: bytes, objects: dict[int, tuple[int, int]]) -> list[int]:
     """Object numbers of the pages, in reading order where we can tell.
 
     Ordering by object number is the common case and matches reading order in
@@ -262,58 +283,61 @@ def _page_order(objects: dict[int, bytes]) -> list[int]:
     missing page because it still looks like evidence.
     """
     ordered: list[int] = []
-    for number, body in sorted(objects.items()):
+    for number in sorted(objects):
+        body = _object_body(data, objects, number)
         if b"/Pages" not in body:
             continue
         for kids in _KIDS.findall(body):
             for reference in _INDIRECT_REF.findall(kids):
                 candidate = int(reference)
-                if candidate in objects and _PAGE_TYPE.search(objects[candidate]):
+                if candidate in objects and _PAGE_TYPE.search(_object_body(data, objects, candidate)):
                     if candidate not in ordered:
                         ordered.append(candidate)
         if ordered:
             return ordered
 
-    for number, body in sorted(objects.items()):
+    for number in sorted(objects):
+        body = _object_body(data, objects, number)
         if _PAGE_TYPE.search(body) and b"/Contents" in body:
             ordered.append(number)
     return ordered
 
 
-def _page_content(body: bytes, objects: dict[int, bytes]) -> bytes:
+def _page_content(body: bytes, objects: dict[int, tuple[int, int]], data: bytes) -> bytes:
     """Concatenate every content stream a page references."""
     reference = _CONTENTS_REF.search(body)
     if not reference:
         return b""
     content = bytearray()
     for target in _INDIRECT_REF.findall(reference.group(1)):
-        decoded = _decode_stream(objects.get(int(target), b""))
+        decoded = _decode_stream(_object_body(data, objects, int(target)))
         if decoded:
             content += decoded + b"\n"
     return bytes(content)
 
 
-def _font_cmaps(objects: dict[int, bytes]) -> dict[int, dict[int, str]]:
+def _font_cmaps(data: bytes, objects: dict[int, tuple[int, int]]) -> dict[int, dict[int, str]]:
     """Map font object number to its ToUnicode table."""
     cmaps: dict[int, dict[int, str]] = {}
-    for number, body in objects.items():
+    for number in objects:
+        body = _object_body(data, objects, number)
         if not _FONT_TYPE.search(body):
             continue
         reference = _TO_UNICODE_REF.search(body)
         if not reference:
             continue
-        decoded = _decode_stream(objects.get(int(reference.group(1)), b""))
+        decoded = _decode_stream(_object_body(data, objects, int(reference.group(1))))
         if decoded:
             cmaps[number] = _parse_cmap(decoded)
     return cmaps
 
 
-def _page_fonts(body: bytes, objects: dict[int, bytes]) -> dict[str, int]:
+def _page_fonts(body: bytes, objects: dict[int, tuple[int, int]], data: bytes) -> dict[str, int]:
     """Map the page's font resource names to font object numbers."""
     resources = body
     indirect = _RESOURCES_INDIRECT.search(body)
     if indirect:
-        resources = objects.get(int(indirect.group(1)), body)
+        resources = _object_body(data, objects, int(indirect.group(1))) or body
     if not _RESOURCES_DIRECT.search(resources) and resources is body:
         return {}
     dictionary = _FONT_DICT.search(resources)
@@ -388,15 +412,15 @@ def read(discovered: DiscoveredFile) -> ReadResult:
         )
 
     objects = _load_objects(data)
-    cmaps = _font_cmaps(objects)
+    cmaps = _font_cmaps(data, objects)
 
     spans: list[TextSpan] = []
-    for position, number in enumerate(_page_order(objects), start=1):
-        body = objects[number]
-        content = _page_content(body, objects)
+    for position, number in enumerate(_page_order(data, objects), start=1):
+        body = _object_body(data, objects, number)
+        content = _page_content(body, objects, data)
         if not content:
             continue
-        lines = _page_lines(content, _page_fonts(body, objects), cmaps)
+        lines = _page_lines(content, _page_fonts(body, objects, data), cmaps)
         # One span per drawn line rather than per page. A page of a datasheet
         # holds a dozen unrelated facts, and a single page-sized span would
         # make every one of them equally good evidence for the others.

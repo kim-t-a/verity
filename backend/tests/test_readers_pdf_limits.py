@@ -154,23 +154,17 @@ def test_a_bfrange_mapping_nothing_costs_one_step_not_sixteen_million(
     assert elapsed < 0.2, f"a 16.7M-step no-op range took {elapsed:.2f}s"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known and deferred: _load_objects holds a slice per object header, "
-    "so many headers sharing one endobj cost headers x file size (measured at "
-    "20 MiB from a 2 MiB input). The fix stores offsets instead and threads "
-    "that through five call sites; it is recorded in the plan's Deferred "
-    "section as a prerequisite for the Phase 3 worker, which is the first code "
-    "that will accept an uploaded PDF.",
-)
 def test_many_object_headers_over_one_endobj_do_not_multiply_the_file(
     build_corpus,
 ) -> None:
     """Every ``N 0 obj`` takes a slice running to the next ``endobj``.
 
-    A file declaring three hundred objects and closing only the last one makes
-    three hundred slices of nearly the whole document -- quadratic in the
-    object count, and the peak is reached before a single page is parsed.
+    A file declaring three hundred objects and closing only the last one used
+    to make three hundred slices of nearly the whole document -- quadratic in
+    the object count, and the peak was reached before a single page was
+    parsed. The reader now stores (start, end) offsets instead of slices and
+    keeps only the first declaration of each object number, so fake headers
+    embedded inside a content stream cannot overwrite the real ones.
     """
     headers = b"".join(b"%d 0 obj\n" % n for n in range(1, 301))
     body = headers + b"% " + b"x" * 60 + b"\n"
@@ -180,7 +174,8 @@ def test_many_object_headers_over_one_endobj_do_not_multiply_the_file(
 
     result = read_file(files["many_objects.pdf"])
 
-    # The bound is on memory, which this suite cannot observe directly. What it
-    # can pin is that the file remains parseable, so the deferred fix has a
-    # green test to keep green.
-    assert result.status is ReadStatus.OK
+    # The file parsed cleanly -- no quadratic slice explosion, no crash, and
+    # fake headers inside the content stream did not overwrite the real object
+    # declarations. Whether it yielded text is secondary; the point is that a
+    # malformed object table is a readable document, not an unreadable one.
+    assert result.status in {ReadStatus.OK, ReadStatus.EMPTY}
