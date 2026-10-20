@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: verity-db
+    environment:
+      POSTGRES_DB: verity
+      POSTGRES_USER: verity
+      POSTGRES_PASSWORD: verity_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - verity_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verity -d verity"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  verity_db_data:
