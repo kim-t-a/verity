@@ -113,6 +113,41 @@ def _load_objects(data: bytes) -> dict[int, bytes]:
     return objects
 
 
+def _flate_expand(raw: bytes) -> bytes | None:
+    """Expand one Flate stream, refusing output past ``MAX_ZIP_MEMBER_BYTES``.
+
+    The cap is measured on the *output*, where the size actually is. Checking
+    the compressed input bounds nothing: deflate's entire job is producing
+    many bytes from a few, so a stream of two hundred compressed bytes once
+    passed every input-side check and then expanded two hundred thousand-fold.
+
+    ``decompress(data, max_length)`` hands the output out in bounded pieces, so
+    the refusal happens before the memory is allocated rather than after it is
+    held. A truncated stream surfaces as the pieces produced before the error
+    -- its prefix, which is worth more than nothing when the alternative is
+    losing the page.
+    """
+    out = bytearray()
+    obj = zlib.decompressobj()
+    data: bytes = raw
+    try:
+        while True:
+            piece = obj.decompress(data, MAX_ZIP_MEMBER_BYTES - len(out) + 1)
+            out += piece
+            if len(out) > MAX_ZIP_MEMBER_BYTES:
+                return None
+            data = obj.unconsumed_tail
+            if obj.eof:
+                break
+            if not piece and not data:
+                # No more input, no progress, and the stream never reached its
+                # end: a truncated file yields its prefix here.
+                break
+    except zlib.error:
+        return bytes(out) or None
+    return bytes(out)
+
+
 def _decode_stream(body: bytes) -> bytes | None:
     """Return a stream's decoded bytes, or ``None`` if it cannot be decoded.
 
@@ -134,17 +169,10 @@ def _decode_stream(body: bytes) -> bytes | None:
         return raw
 
     for _ in range(MAX_STREAM_FILTERS):
-        if len(raw) > MAX_ZIP_MEMBER_BYTES:
+        expanded = _flate_expand(raw)
+        if expanded is None:
             return None
-        try:
-            raw = zlib.decompress(raw)
-        except zlib.error:
-            try:
-                # A truncated stream still yields its prefix, which is worth
-                # more than nothing when the alternative is losing the page.
-                return zlib.decompressobj().decompress(raw)
-            except zlib.error:
-                return None
+        raw = expanded
         if b"FlateDecode" not in raw[:2048]:
             return raw
     return raw
@@ -174,10 +202,16 @@ def _parse_cmap(data: bytes) -> dict[int, str]:
                 base = int(target, 16)
             except ValueError:
                 continue
-            for offset in range(high_code - low_code + 1):
-                code_point = base + offset
-                if code_point <= _MAX_CODE_POINT:
-                    cmap[low_code + offset] = chr(code_point)
+            # How many offsets can produce a code point at all. A range may
+            # name a span wider than the codes that exist (sixty bytes have
+            # been measured naming 16.7 million); where ``base`` starts above
+            # the ceiling every offset fails the bound, so walking the range
+            # costs one no-op step per code point -- CPU without a single
+            # insertion to show for it. Computing the valid span once, in
+            # arithmetic, does the same job in zero iterations.
+            valid = min(high_code - low_code + 1, _MAX_CODE_POINT - base + 1)
+            for offset in range(max(valid, 0)):
+                cmap[low_code + offset] = chr(base + offset)
 
     return cmap
 

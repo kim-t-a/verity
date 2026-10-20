@@ -105,7 +105,8 @@ class TestContentFiltering:
 
 
 class TestChunkShape:
-    def test_one_chunk_per_span_when_the_span_fits(self) -> None:
+    def test_short_spans_group_into_one_chunk(self) -> None:
+        """Two short spans that fit together become one chunk, not two."""
         result = readable(
             span("Maximum junction temperature 94 C", "page 3 line 4", 4),
             span("Board power 410 W", "page 3 line 5", 5),
@@ -113,10 +114,12 @@ class TestChunkShape:
 
         chunks = chunks_for(result)
 
-        assert [chunk.text for chunk in chunks] == [
-            "Maximum junction temperature 94 C",
-            "Board power 410 W",
-        ]
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk.text == "Maximum junction temperature 94 C\nBoard power 410 W"
+        assert chunk.location == "page 3 line 4; page 3 line 5"
+        assert chunk.ordinal == 4
+        assert chunk.media_type is MediaType.PDF
 
     def test_provenance_is_carried_onto_every_chunk(self) -> None:
         """Retrieval returns chunks from across the corpus with nothing else
@@ -143,14 +146,157 @@ class TestChunkShape:
         assert chunk.text == "Maximum junction temperature: 94 °C"
         assert chunk.normalised == "MAXIMUMJUNCTIONTEMPERATURE:94C"
 
-    def test_ordinal_survives_so_order_within_a_file_is_recoverable(self) -> None:
+    def test_grouped_chunk_ordinal_is_first_span_ordinal(self) -> None:
+        """The chunk's ordinal is the first span's, so within-file ordering
+        stays recoverable even when spans are grouped."""
         result = readable(
             span("alpha 1", "line 1", 1),
             span("beta 2", "line 2", 2),
             span("gamma 3", "line 3", 3),
         )
 
-        assert [chunk.ordinal for chunk in chunks_for(result)] == [1, 2, 3]
+        chunks = chunks_for(result)
+
+        assert len(chunks) == 1
+        assert chunks[0].ordinal == 1
+        # Every source location is named, none implied by a range.
+        assert chunks[0].location == "line 1; line 2; line 3"
+
+
+class TestGrouping:
+    """Consecutive spans that fit are grouped; oversized spans stand alone."""
+
+    def test_group_stops_before_exceeding_max_chunk_chars(self) -> None:
+        """When the next span would overflow the cap, it starts a new chunk."""
+        # Span 1: 1000 chars, span 2: 1000 chars. Together with newline = 2001 > 2000.
+        span1 = "a " * 500  # 1000 chars
+        span2 = "b " * 500  # 1000 chars
+        span3 = "c " * 300  # 600 chars; span2+span3 = 1601 <= 2000, grouped
+        result = readable(
+            span(span1, "line 1", 1),
+            span(span2, "line 2", 2),
+            span(span3, "line 3", 3),
+        )
+
+        chunks = chunks_for(result)
+
+        # span1+span2 = 2001 chars > 2000, so they don't fit together.
+        # span1 is alone, span2+span3 grouped.
+        assert len(chunks) == 2
+        assert chunks[0].text == span1
+        assert chunks[0].location == "line 1"
+        assert chunks[1].text == span2 + "\n" + span3
+        assert chunks[1].location == "line 2; line 3"
+
+    def test_oversized_span_is_not_grouped_with_neighbors(self) -> None:
+        """An oversized span is split on its own and never merged with
+        adjacent spans, even if they would fit."""
+        oversized = "word " * 600  # 3000 chars > MAX_CHUNK_CHARS
+        small = "small value 94"
+        result = readable(
+            span(small, "line 1", 1),
+            span(oversized, "line 2", 2),
+            span(small, "line 3", 3),
+        )
+
+        chunks = chunks_for(result)
+
+        # line 1 stands alone, line 2 is split into 2 chunks, line 3 stands alone.
+        assert len(chunks) == 4
+        assert chunks[0].text == small
+        assert chunks[0].location == "line 1"
+        assert chunks[1].location.startswith("line 2 part 1 of 2")
+        assert chunks[2].location.startswith("line 2 part 2 of 2")
+        assert chunks[3].text == small
+        assert chunks[3].location == "line 3"
+
+    def test_table_header_and_first_row_kept_together(self) -> None:
+        """A table header span and its first data row, when they fit, are
+        grouped into one chunk so labels stay with values."""
+        from verity.engine.models import ReadResult
+
+        result = ReadResult.of(
+            "support/bug_database.csv",
+            MediaType.CSV,
+            [
+                span("ticket | component | status | fixed_in", "header", 0),
+                span(
+                    "ticket=ORR-1847 | component=power | status=closed | fixed_in=4.3.2",
+                    "row 2",
+                    1,
+                ),
+            ],
+        )
+
+        chunks = chunks_for(result)
+
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert "fixed_in=4.3.2" in chunk.text
+        assert chunk.location == "header; row 2"
+        assert chunk.ordinal == 0
+        assert chunk.media_type is MediaType.CSV
+
+    def test_punctuation_only_span_is_dropped_from_group(self) -> None:
+        """A punctuation-only span contributes nothing, even inside a group."""
+        result = readable(
+            span("----", "line 1", 1),
+            span("real value 94", "line 2", 2),
+        )
+
+        chunks = chunks_for(result)
+
+        assert len(chunks) == 1
+        assert chunks[0].text == "real value 94"
+        assert chunks[0].location == "line 2"
+
+    def test_all_punctuation_spans_yield_no_chunks(self) -> None:
+        """A file of only punctuation spans produces no chunks at all."""
+        result = readable(
+            span("----", "line 1", 1),
+            span("=== ===", "line 2", 2),
+        )
+
+        assert chunks_for(result) == ()
+
+    def test_no_text_loss_or_duplication_in_grouped_chunk(self) -> None:
+        """Every span's text appears exactly once in the grouped chunk."""
+        result = readable(
+            span("alpha beta gamma", "line 1", 1),
+            span("delta epsilon zeta", "line 2", 2),
+            span("eta theta iota", "line 3", 3),
+        )
+
+        chunks = chunks_for(result)
+
+        assert len(chunks) == 1
+        combined = chunks[0].text
+        assert "alpha beta gamma" in combined
+        assert "delta epsilon zeta" in combined
+        assert "eta theta iota" in combined
+        # No duplication: each distinct word appears once.
+        assert combined.count("alpha") == 1
+        assert combined.count("epsilon") == 1
+        assert combined.count("iota") == 1
+
+    def test_group_preserves_rel_path_and_media_type(self) -> None:
+        """The citation string and media type travel with the grouped chunk."""
+        from verity.engine.models import ReadResult
+
+        result = ReadResult.of(
+            "specs/datasheet.pdf",
+            MediaType.PDF,
+            [
+                span("value 94", "page 1 line 1", 1),
+                span("value 95", "page 1 line 2", 2),
+            ],
+        )
+
+        chunks = chunks_for(result)
+
+        assert len(chunks) == 1
+        assert chunks[0].rel_path == "specs/datasheet.pdf"
+        assert chunks[0].media_type is MediaType.PDF
 
 
 class TestSplitting:
@@ -219,6 +365,73 @@ class TestSplitting:
         holders = [chunk for chunk in chunks if "SERIAL-ORR-2214-B" in chunk.text]
 
         assert len(holders) == 1
+
+
+class TestSentenceSplitting:
+    """Oversized spans are cut at sentence boundaries before whitespace."""
+
+    def test_sentence_boundary_preferred_over_whitespace(self) -> None:
+        """When both a sentence end and a space are near the cap, the sentence
+        end wins so a value is not torn mid-sentence."""
+        text = "x " * 900  # 1800 chars
+        text += "alpha beta gamma. delta epsilon zeta. "  # sentence ends in lookback
+        text += "y " * 200  # total > MAX_CHUNK_CHARS, forces a split
+
+        chunks = chunks_for(readable(span(text)))
+        assert len(chunks) > 1
+        # The last sentence end in the lookback wins, so the chunk ends with
+        # "zeta." not "gamma." -- this maximizes chunk size while staying at a
+        # sentence boundary.
+        assert chunks[0].text.rstrip().endswith("zeta.")
+
+    def test_decimal_number_is_not_a_sentence_boundary(self) -> None:
+        """``94.5`` is a measurement, not the end of a sentence."""
+        text = "x " * 900  # 1800 chars
+        text += "temperature 94.5 degrees. "  # decimal inside lookback
+        text += "z " * 200  # total > MAX_CHUNK_CHARS, forces a split
+
+        chunks = chunks_for(readable(span(text)))
+        # The decimal should stay inside one chunk with its unit.
+        holders = [chunk for chunk in chunks if "94.5" in chunk.text]
+        assert len(holders) == 1
+        assert any("degrees" in chunk.text for chunk in holders)
+
+    def test_abbreviation_does_not_crash(self) -> None:
+        """``e.g.`` mid-text must not raise, even if it looks like a sentence end."""
+        text = ("filler " * 300) + "for example e.g. a value. " + ("next " * 400)
+
+        chunks = chunks_for(readable(span(text)))
+        assert len(chunks) > 1
+        # No characters lost.
+        rejoined = "".join(chunk.normalised for chunk in chunks)
+        assert rejoined == normalise(text)
+
+    def test_spanish_sentence_boundary_splits(self) -> None:
+        """Non-English sentences split at ``. ? !`` without an uppercase lookup."""
+        text = ("filler " * 300) + "¿Cómo está? Está bien. ¡Muy bien! " + ("x " * 400)
+
+        chunks = chunks_for(readable(span(text)))
+        assert len(chunks) > 1
+        # Each sentence should be intact in some chunk.
+        full = " ".join(chunk.text for chunk in chunks)
+        assert "¿Cómo está?" in full
+        assert "Está bien." in full
+        assert "¡Muy bien!" in full
+
+    def test_no_chunk_exceeds_max_chunk_chars(self) -> None:
+        """The hard ceiling is never violated, whatever the break."""
+        text = "word " * 3000
+
+        chunks = chunks_for(readable(span(text)))
+        assert all(len(chunk.text) <= MAX_CHUNK_CHARS for chunk in chunks)
+
+    def test_no_characters_lost_with_sentence_splitting(self) -> None:
+        """The normalised form is preserved across sentence-aware cuts."""
+        text = "alpha beta gamma. delta epsilon zeta. " + "value " * 500
+
+        chunks = chunks_for(readable(span(text)))
+        rejoined = "".join(chunk.normalised for chunk in chunks)
+        assert rejoined == normalise(text)
 
 
 class TestWholeCorpus:
