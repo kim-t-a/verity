@@ -70,7 +70,7 @@ def test_engine_imports_stranger_modules_only_from_the_standard_library() -> Non
         "__future__", "array", "collections", "csv", "dataclasses", "datetime",
         "enum", "hashlib", "io", "json", "math", "os", "pathlib", "re", "shlex",
         "shutil", "stat", "subprocess", "sys", "time", "typing", "unicodedata",
-        "xml", "zipfile", "zlib",
+        "urllib", "xml", "zipfile", "zlib",
     }
     offenders: list[str] = []
     for source in sorted(ENGINE.rglob("*.py")):
