@@ -7,12 +7,22 @@ model-provider access — the frontend never talks to NVIDIA directly.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from verity.api.documents import router as documents_router
 from verity.api.sessions import router as sessions_router
 from verity.api.ingestion import router as ingestion_router
+
+# The provider keys live in .env at the repo root. Loading here (module
+# import, before any route runs) means uvicorn needs no shell profile
+# wrapper, and the backends in verity.providers can read os.environ at
+# construction. override=False: explicit environment wins over .env.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(_REPO_ROOT / ".env", override=False)
 
 
 def create_app() -> FastAPI:

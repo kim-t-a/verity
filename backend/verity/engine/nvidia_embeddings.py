@@ -66,7 +66,11 @@ class NvidiaEmbeddingProvider:
         self._model_id = model_id
         self._dimension = dimension
         self._api_key = api_key if api_key is not None else os.environ.get("NVIDIA_API_KEY", "")
-        self._base_url = (base_url or os.environ.get("NVIDIA_API_BASE_URL", "")).rstrip("/")
+        # An explicitly passed empty string means empty, not "fall back to the
+        # environment": tests rely on being able to pin a missing setting.
+        self._base_url = (
+            base_url if base_url is not None else os.environ.get("NVIDIA_API_BASE_URL", "")
+        ).rstrip("/")
         self._timeout = timeout
 
     @property

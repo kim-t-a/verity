@@ -16,5 +16,36 @@ services:
       timeout: 5s
       retries: 5
 
+  backend:
+    build: ./backend
+    container_name: verity-backend
+    # The provider key comes from .env and stays in the backend process:
+    # the frontend never sees it (rule 7 — the proxy is a security boundary).
+    env_file: .env
+    environment:
+      VERITY_DB_HOST: db
+      VERITY_UPLOAD_DIR: /data/uploads
+    volumes:
+      - verity_uploads:/data/uploads
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: verity-frontend
+    # The dev server proxies /api. Inside compose the backend is reachable by
+    # service name; the browser never talks to it directly, so no API key and
+    # no CORS is involved.
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
 volumes:
   verity_db_data:
+  verity_uploads:

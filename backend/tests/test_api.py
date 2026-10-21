@@ -20,6 +20,19 @@ from fastapi.testclient import TestClient
 from verity.api.main import app
 
 
+@pytest.fixture(autouse=True)
+def pin_offline_providers(monkeypatch: pytest.MonkeyPatch):
+    """This suite must never call a model provider.
+
+    api.main loads .env at import (which is the product behaviour), so a real
+    key may be in the environment here. These two variables pin the
+    deterministic fakes for every test in this module; a future test that
+    wants the real backends must say so explicitly.
+    """
+    monkeypatch.setenv("VERITY_LLM_PROVIDER", "fake")
+    monkeypatch.setenv("VERITY_EMBEDDING_PROVIDER", "fake")
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)

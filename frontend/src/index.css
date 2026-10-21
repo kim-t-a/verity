@@ -1,0 +1,364 @@
+/*
+ * Verity — an evidence desk, not a chat app.
+ *
+ * The tokens are the project's established design language (see
+ * docs/verity-design-tokens.css): cool archive paper, ink text, one ochre
+ * accent reserved for the act of pointing at evidence. Tailwind handles
+ * layout; the classes below are the pieces that carry meaning and would be
+ * noise repeated across components.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #f5f7f8;
+    --surface: #ffffff;
+    --surface-2: #ebeff2;
+    --fg: #141a21;
+    --fg-muted: #57616f;
+    --fg-faint: #808b99;
+    --rule: #d5dbe2;
+    --rule-strong: #b8c1cb;
+    --accent: #96500a;
+    --on-accent: #ffffff;
+    --accent-wash: #fcf1df;
+    --accent-rule: #e0bc85;
+    --ok: #1c6e48;
+    --ok-wash: #e4f2ea;
+    --stop: #9a2323;
+    --stop-wash: #fbeaea;
+    --shadow: 0 1px 2px rgba(20, 26, 33, 0.05),
+      0 8px 24px -16px rgba(20, 26, 33, 0.28);
+    --font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1318;
+      --surface: #161c23;
+      --surface-2: #1d242d;
+      --fg: #e5eaf0;
+      --fg-muted: #97a2b0;
+      --fg-faint: #6d7886;
+      --rule: #29313b;
+      --rule-strong: #3b4553;
+      --accent: #e4a24a;
+      --on-accent: #141a21;
+      --accent-wash: #2b2113;
+      --accent-rule: #5c4520;
+      --ok: #57c08c;
+      --ok-wash: #14261d;
+      --stop: #e8796e;
+      --stop-wash: #2b1917;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -16px rgba(0, 0, 0, 0.8);
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    line-height: 1.2;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  a {
+    color: var(--accent);
+    text-underline-offset: 0.18em;
+  }
+
+  ::selection {
+    background: var(--accent-wash);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* The trace panel is a <details>; its marker is a browser default that
+     does not belong in this type system. */
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .sheet {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+  }
+
+  .answer-body {
+    font-family: var(--font-display);
+    font-size: 17px;
+    line-height: 1.62;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+
+  .answer-body p + p {
+    margin-top: 0.7em;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A citation numeral is a pointer, so it is a button, not a span. */
+  .citation-num {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    vertical-align: super;
+    padding: 2px 3px;
+    margin-left: 1px;
+    border-radius: 3px;
+    background: transparent;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+
+  .citation-num:hover {
+    background: var(--accent-wash);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .citation-num[aria-pressed="true"] {
+    background: var(--accent-wash);
+    box-shadow: inset 0 0 0 1px var(--accent-rule);
+  }
+
+  .evidence-row {
+    border-left: 2px solid transparent;
+    padding: 14px 4px 14px 12px;
+    margin-left: -14px;
+    transition: background-color 120ms ease, border-color 120ms ease;
+    cursor: pointer;
+    text-align: left;
+    width: calc(100% + 14px);
+    display: block;
+    background: transparent;
+    color: inherit;
+  }
+
+  .evidence-row:hover {
+    background: var(--surface-2);
+  }
+
+  .evidence-row[aria-current="true"] {
+    background: var(--accent-wash);
+    border-left-color: var(--accent);
+  }
+
+  .evidence-index {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: 3px;
+    min-width: 18px;
+    flex: none;
+  }
+
+  .evidence-quote {
+    font-family: var(--font-display);
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 10px 12px;
+    margin-top: 8px;
+    max-height: 9.5em;
+    overflow: hidden;
+    position: relative;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .evidence-quote::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 2.2em;
+    background: linear-gradient(to bottom, transparent, var(--bg));
+    pointer-events: none;
+  }
+
+  .status-square {
+    width: 7px;
+    height: 7px;
+    border-radius: 1px;
+    flex: none;
+    display: inline-block;
+  }
+
+  .quiet-button {
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: var(--fg-muted);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 6px 10px;
+    background: transparent;
+    cursor: pointer;
+    transition: border-color 120ms ease, color 120ms ease;
+  }
+
+  .quiet-button:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .quiet-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .text-link {
+    font-size: 13px;
+    color: var(--fg-muted);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-underline-offset: 3px;
+    transition: color 120ms ease, text-decoration-color 120ms ease;
+  }
+
+  .text-link:hover:not(:disabled) {
+    color: var(--accent);
+    text-decoration-color: var(--accent-rule);
+  }
+
+  .text-link:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .field {
+    width: 100%;
+    background: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 11px 12px;
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.45;
+    resize: none;
+    transition: border-color 120ms ease;
+  }
+
+  .field::placeholder {
+    color: var(--fg-faint);
+  }
+
+  .field:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .drop-surface {
+    border: 1px dashed var(--rule-strong);
+    border-radius: 4px;
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
+
+  .drop-surface[data-active="true"] {
+    border-color: var(--accent);
+    background: var(--accent-wash);
+  }
+
+  .indeterminate {
+    height: 2px;
+    overflow: hidden;
+    background: var(--accent-wash);
+    position: relative;
+  }
+
+  .indeterminate::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    width: 36%;
+    background: var(--accent);
+    animation: sweep 1.4s ease-in-out infinite;
+  }
+
+  .fade-rise {
+    animation: fade-rise 180ms ease-out both;
+  }
+}
+
+@keyframes sweep {
+  0% {
+    left: -36%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

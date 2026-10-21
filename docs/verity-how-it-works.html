@@ -1,0 +1,1173 @@
+<title>Verity System Walkthrough</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+
+<style>
+/*
+  Design plan
+  -----------
+  Colour: cool archive-paper neutrals with a single ochre "highlighter" accent —
+          the colour of a marked passage, because marking a passage is the whole
+          product. Semantic green (verified) and red (no evidence) are separate
+          from the accent and never used decoratively.
+  Type:   IBM Plex superfamily. Serif for display, Sans for running text, Mono
+          for every identifier, label and value — so code and prose are visibly
+          different kinds of thing.
+  Layout: one measured prose column, breaking out to full width for the two
+          pipeline diagrams and the process grid. Sequences get numbered rails;
+          prose sections get labelled eyebrows.
+*/
+
+:root {
+  --bg: #F5F7F8;
+  --surface: #FFFFFF;
+  --surface-2: #EBEFF2;
+  --fg: #141A21;
+  --fg-muted: #57616F;
+  --fg-faint: #808B99;
+  --rule: #D5DBE2;
+  --rule-strong: #B8C1CB;
+  --accent: #96500A;
+  --accent-wash: #FCF1DF;
+  --accent-rule: #E0BC85;
+  --ok: #1C6E48;
+  --ok-wash: #E4F2EA;
+  --stop: #9A2323;
+  --stop-wash: #FBEAEA;
+  --shadow: 0 1px 2px rgba(20, 26, 33, .05), 0 8px 24px -16px rgba(20, 26, 33, .28);
+
+  --font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --col: 68ch;
+  --wide: 1060px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1318;
+    --surface: #161C23;
+    --surface-2: #1D242D;
+    --fg: #E5EAF0;
+    --fg-muted: #97A2B0;
+    --fg-faint: #6D7886;
+    --rule: #29313B;
+    --rule-strong: #3B4553;
+    --accent: #E4A24A;
+    --accent-wash: #2B2113;
+    --accent-rule: #5C4520;
+    --ok: #57C08C;
+    --ok-wash: #14261D;
+    --stop: #E8796E;
+    --stop-wash: #2B1917;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0F1318;
+  --surface: #161C23;
+  --surface-2: #1D242D;
+  --fg: #E5EAF0;
+  --fg-muted: #97A2B0;
+  --fg-faint: #6D7886;
+  --rule: #29313B;
+  --rule-strong: #3B4553;
+  --accent: #E4A24A;
+  --accent-wash: #2B2113;
+  --accent-rule: #5C4520;
+  --ok: #57C08C;
+  --ok-wash: #14261D;
+  --stop: #E8796E;
+  --stop-wash: #2B1917;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page {
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 4rem;
+}
+
+.wrap { max-width: var(--wide); margin-inline: auto; }
+.col { max-width: var(--col); }
+
+/* ---------- headers and prose ---------- */
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: .6875rem;
+  font-weight: 500;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+h1, h2, h3, h4 { text-wrap: balance; line-height: 1.2; }
+
+h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(2.1rem, 6.5vw, 3.15rem);
+  letter-spacing: -.017em;
+  margin: 0;
+}
+
+h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(1.4rem, 3.6vw, 1.72rem);
+  letter-spacing: -.011em;
+  margin: 0;
+}
+
+h3 {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 1.0625rem;
+  letter-spacing: -.005em;
+  margin: 0;
+}
+
+h4 {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: .9375rem;
+  margin: 0;
+}
+
+p { margin: 0; }
+p + p { margin-top: .8em; }
+
+a { color: var(--accent); text-underline-offset: .2em; }
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+code, .mono, kbd { font-family: var(--font-mono); }
+
+code {
+  font-size: .855em;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: .08em .34em;
+  /* Not nowrap: a file path in the footer is 66 characters and no phone column
+     fits that. `anywhere` keeps short snippets on one line and breaks only the
+     ones that would otherwise push the page sideways. */
+  overflow-wrap: anywhere;
+}
+
+strong { font-weight: 600; }
+
+mark {
+  background: var(--accent-wash);
+  color: inherit;
+  border-bottom: 1px solid var(--accent-rule);
+  padding: .05em .15em;
+  border-radius: 2px;
+}
+
+.lede {
+  font-size: 1.125rem;
+  line-height: 1.58;
+  color: var(--fg-muted);
+}
+
+.muted { color: var(--fg-muted); }
+
+section { margin-top: 3.5rem; }
+section > * + * { margin-top: 1rem; }
+
+.sec-head { display: flex; flex-direction: column; gap: .35rem; }
+section > .sec-head + * { margin-top: 1.25rem; }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+  border-bottom: 1px solid var(--rule);
+  padding-block: 3rem 2rem;
+  margin-bottom: .5rem;
+}
+
+.masthead-inner { display: flex; flex-direction: column; gap: 1.1rem; }
+
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .55rem 1rem;
+}
+
+.title-row .product {
+  font-family: var(--font-mono);
+  font-size: .8125rem;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.spec-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1.5rem;
+  font-family: var(--font-mono);
+  font-size: .78rem;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--rule);
+  padding-top: 1.1rem;
+  margin-top: .35rem;
+}
+.spec-strip b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---------- pull-out callout ---------- */
+
+.pull {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-wash);
+  padding: 1rem 1.15rem;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: .55rem;
+}
+.pull p { font-size: .9375rem; }
+
+.versus {
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 620px) { .versus { grid-template-columns: 1fr 1fr; } }
+
+.versus > div {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: .9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+.versus .was { border-left: 3px solid var(--stop); }
+.versus .now { border-left: 3px solid var(--ok); }
+.versus dt {
+  font-family: var(--font-mono);
+  font-size: .6875rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.versus .was dt { color: var(--stop); }
+.versus .now dt { color: var(--ok); }
+.versus dd { margin: 0; font-size: .9rem; }
+.versus dl { margin: 0; display: contents; }
+
+/* ---------- process grid ---------- */
+
+.procs {
+  display: grid;
+  gap: .85rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 560px) { .procs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 900px) { .procs { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+.proc {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  padding: 0 0 .95rem;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.proc-head {
+  padding: .7rem .95rem;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .5rem;
+}
+.proc-head h3 { font-family: var(--font-mono); font-size: .875rem; font-weight: 600; }
+.proc-head .where { font-size: .6875rem; font-family: var(--font-mono); color: var(--fg-faint); }
+.proc-body { padding: .8rem .95rem 0; display: flex; flex-direction: column; gap: .55rem; }
+.proc-body p { font-size: .875rem; }
+.proc-body .owns {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  line-height: 1.65;
+  color: var(--fg-muted);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.proc-body .owns li::before { content: "· "; color: var(--accent); }
+
+.maynot {
+  margin-top: auto;
+  font-size: .78rem;
+  line-height: 1.5;
+  color: var(--stop);
+  border-top: 1px dashed var(--rule);
+  padding-top: .6rem;
+}
+
+/* ---------- connection legend ---------- */
+
+.legend {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+}
+.legend h3 { font-size: .9375rem; }
+.legend ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .45rem; }
+.legend li {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: .15rem;
+  font-size: .875rem;
+  padding-bottom: .45rem;
+  border-bottom: 1px solid var(--rule);
+}
+.legend li:last-child { border-bottom: 0; padding-bottom: 0; }
+@media (min-width: 680px) {
+  .legend li { grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: 1rem; align-items: baseline; }
+}
+.edge {
+  font-family: var(--font-mono);
+  font-size: .78rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.edge .arrow { color: var(--accent); padding-inline: .3em; }
+
+/* ---------- pipeline stages ---------- */
+
+.pipeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  counter-reset: stage;
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  gap: 0 .95rem;
+  padding-bottom: 1.05rem;
+  position: relative;
+}
+.stage:last-child { padding-bottom: 0; }
+
+.stage::before {
+  content: "";
+  position: absolute;
+  left: calc(1.2rem - .5px);
+  top: 1.75rem;
+  bottom: -.2rem;
+  width: 1px;
+  background: var(--rule-strong);
+}
+.stage:last-child::before { display: none; }
+
+.stage-n {
+  counter-increment: stage;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  position: relative;
+  z-index: 1;
+}
+.stage-n::before { content: counter(stage, decimal-leading-zero); }
+
+.stage-key .stage-n {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+}
+
+.stage-body {
+  min-width: 0;
+  padding-top: .28rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  padding: .85rem 1rem .95rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+}
+.stage-key .stage-body { border-color: var(--accent-rule); }
+
+.stage-body p { font-size: .9rem; }
+
+.tags { display: flex; flex-wrap: wrap; gap: .35rem; }
+.tag {
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  letter-spacing: .03em;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: 100px;
+  padding: .16rem .55rem;
+  color: var(--fg-muted);
+  /* No nowrap: a tag wider than its column cannot shrink while nowrap is set,
+     because nowrap makes min-content equal max-content. Wrapping at the spaces
+     is better than a page that scrolls sideways. */
+}
+.tag.is-ok { background: var(--ok-wash); border-color: var(--ok); color: var(--ok); }
+.tag.is-stop { background: var(--stop-wash); border-color: var(--stop); color: var(--stop); }
+.tag.is-accent { background: var(--accent-wash); border-color: var(--accent-rule); color: var(--accent); }
+
+/* ---------- loop box ---------- */
+
+.loop {
+  border: 1px solid var(--accent-rule);
+  background: var(--accent-wash);
+  border-radius: 9px;
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+}
+.loop-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .4rem .9rem;
+}
+.tools {
+  display: grid;
+  gap: .4rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 560px) { .tools { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 860px) { .tools { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+.tool {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: .5rem .65rem;
+  display: flex;
+  flex-direction: column;
+  gap: .1rem;
+  min-width: 0;
+}
+.tool .sig {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.tool .what { font-size: .755rem; color: var(--fg-muted); line-height: 1.45; }
+.tool.terminal { border-left: 3px solid var(--accent); }
+
+/* ---------- invariants ---------- */
+
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 40rem;
+  font-size: .875rem;
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: .7rem .85rem;
+  border-bottom: 1px solid var(--rule);
+}
+thead th {
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  font-weight: 500;
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.inv {
+  font-family: var(--font-mono);
+  font-size: .75rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+td.where { font-family: var(--font-mono); font-size: .75rem; color: var(--fg-muted); }
+
+/* ---------- phases ---------- */
+
+.phases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .6rem; }
+
+.phase {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: .5rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  padding: .9rem 1rem;
+  min-width: 0;
+}
+@media (min-width: 760px) {
+  .phase { grid-template-columns: 4.6rem minmax(0, 1fr) auto; gap: 1.1rem; align-items: start; }
+}
+.phase .pnum {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--fg-faint);
+  padding-top: .15rem;
+  white-space: nowrap;
+}
+.phase .pbody { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.phase .pbody p { font-size: .875rem; color: var(--fg-muted); }
+.phase .pbody h3 { font-size: .9375rem; }
+
+.pill {
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-radius: 100px;
+  padding: .22rem .6rem;
+  white-space: nowrap;
+  justify-self: start;
+  border: 1px solid;
+}
+@media (min-width: 760px) { .pill { justify-self: end; } }
+.pill.done { color: var(--ok); border-color: var(--ok); background: var(--ok-wash); }
+.pill.now { color: var(--accent); border-color: var(--accent); background: var(--accent-wash); }
+.pill.blocked { color: var(--stop); border-color: var(--stop); background: var(--stop-wash); }
+.pill.later { color: var(--fg-faint); border-color: var(--rule-strong); background: var(--surface-2); }
+
+.phase.is-done { border-left: 3px solid var(--ok); }
+.phase.is-now { border-left: 3px solid var(--accent); }
+.phase.is-blocked { border-left: 3px solid var(--stop); }
+
+/* ---------- repo map ---------- */
+
+.repo {
+  display: grid;
+  gap: .55rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 640px) { .repo { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.repo-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .1rem .9rem;
+  padding: .6rem .75rem;
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  background: var(--surface);
+  min-width: 0;
+}
+@media (min-width: 420px) {
+  .repo-row { grid-template-columns: minmax(0, 16rem) minmax(0, 1fr); align-items: baseline; }
+}
+.repo-row .path {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+}
+.repo-row .note { font-size: .815rem; color: var(--fg-muted); }
+
+/* ---------- footer ---------- */
+
+footer {
+  margin-top: 3.5rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 1.25rem;
+  font-size: .815rem;
+  color: var(--fg-faint);
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+}
+footer code { font-size: .78em; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<div class="page">
+  <div class="wrap">
+
+    <header class="masthead">
+      <div class="masthead-inner col">
+        <div class="title-row">
+          <span class="product">Verity</span>
+        </div>
+        <h1>How the parts fit together</h1>
+        <p class="lede">
+          A user uploads documents, asks a question in plain language, and gets an
+          answer that names the file and the place in it. Everything below exists to
+          make those three things true at once: the answer is right, the citation is
+          real, and an answer that does not exist is refused rather than invented.
+        </p>
+        <div class="spec-strip">
+          <span><b>4</b> processes</span>
+          <span><b>5</b> invariants</span>
+          <span><b>6</b> phases</span>
+          <span><b>1</b> shared database</span>
+          <span>Phase <b>1</b> complete</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ================= 1 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">The decision everything follows from</span>
+        <h2>What changed when the machine got a language model</h2>
+      </div>
+      <div class="col">
+        <p>
+          The engine this product is built on came from a challenge where no language
+          model was available at answer time. The machine still had to produce a short
+          literal answer, so the code grew a layer that <em>guessed</em> which sentence
+          in the retrieved text was the answer: pattern-match the shapes an answer
+          takes, score the candidates, pick one. That layer was the cleverest code in
+          the repository and it was also the least honest, because a regex that picks
+          the third-best sentence cannot tell you it guessed.
+        </p>
+        <p>
+          A language model makes that layer unnecessary. So it is <strong>deleted, not
+          adapted</strong> — the pattern matcher, the candidate scorer, the extractor.
+          What replaced it is a model that reads the retrieved passages and chooses,
+          under a set of rules that stop it from choosing something it was never shown.
+        </p>
+      </div>
+      <div class="versus col" style="margin-top:1.25rem">
+        <div class="was">
+          <dl><dt>Deleted</dt>
+          <dd>Regex answer shapes, candidate scoring, span extraction. Code that had to
+          guess because nothing could read.</dd></dl>
+        </div>
+        <div class="now">
+          <dl><dt>Kept</dt>
+          <dd>PDF, DOCX, XLSX and OCR readers, chunking, normalisation, keyword search,
+          reciprocal rank fusion. The parts that find text, not the parts that judge it.</dd></dl>
+        </div>
+      </div>
+      <div class="pull col" style="margin-top:1.25rem">
+        <p>
+          This is the whole architecture in one sentence: <mark>the engine finds and
+          ranks text; the model reads and decides; the backend checks that every
+          citation points at something the model was actually shown.</mark> Each of the
+          four processes below exists to keep one of those three jobs separate from the
+          other two.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================= 2 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">Architecture</span>
+        <h2>Four processes, one shared database</h2>
+        <p class="muted">
+          Each runs in its own container under Docker Compose. They share no memory and
+          no filesystem — the database is the only thing two of them have in common,
+          which is what lets either be restarted without the other noticing.
+        </p>
+      </div>
+
+      <div class="procs" style="margin-top:1.5rem">
+        <article class="proc">
+          <div class="proc-head"><h3>browser</h3><span class="where">React / Vite</span></div>
+          <div class="proc-body">
+            <p>Uploads documents, asks questions, renders the answer with its citations, and can open the trace to show what was retrieved and which actions ran.</p>
+            <ul class="owns"><li>Documents screen</li><li>Chat screen</li><li>Citation panel</li><li>Trace panel</li></ul>
+            <p class="maynot">Never calls the model provider. The NVIDIA endpoint sends no CORS headers, so a browser cannot reach it — and the key must not be on the client anyway.</p>
+          </div>
+        </article>
+
+        <article class="proc">
+          <div class="proc-head"><h3>api</h3><span class="where">FastAPI</span></div>
+          <div class="proc-body">
+            <p>Owns the conversation. Rewrites follow-up questions, runs the agent loop, verifies citations, and holds the only copy of the provider key.</p>
+            <ul class="owns"><li>Session + turn history</li><li>Agent loop</li><li>Citation verification</li><li>Provider key</li></ul>
+            <p class="maynot">Never answers from remembered context. Every turn re-retrieves, so a citation always points at text fetched during that turn.</p>
+          </div>
+        </article>
+
+        <article class="proc">
+          <div class="proc-head"><h3>db</h3><span class="where">Postgres + pgvector</span></div>
+          <div class="proc-body">
+            <p>The only shared state. Holds chunks and their embeddings, the keyword index, the ingestion queue, and sessions.</p>
+            <ul class="owns"><li>chunks + vectors</li><li>tsvector index</li><li>Job queue</li><li>Sessions</li></ul>
+            <p class="maynot">Holds no files' original bytes as data — the file is stored once and served back for viewing.</p>
+          </div>
+        </article>
+
+        <article class="proc">
+          <div class="proc-head"><h3>worker</h3><span class="where">Python</span></div>
+          <div class="proc-body">
+            <p>Claims ingestion jobs and does the slow work: parse, chunk, embed, write rows. Imports the same <code>verity.engine</code> package the API does.</p>
+            <ul class="owns"><li>Parsing</li><li>Chunking</li><li>Batched embedding</li><li>Document status</li></ul>
+            <p class="maynot">Never lets one bad file abort the ingest. It catches per file, marks that document failed, and keeps going.</p>
+          </div>
+        </article>
+      </div>
+
+      <div class="legend" style="margin-top:1.25rem">
+        <h3>Who is allowed to talk to whom</h3>
+        <ul>
+          <li>
+            <span class="edge">browser <span class="arrow">→</span> api</span>
+            <span>Everything the user does goes through the API. This is the only edge the browser has.</span>
+          </li>
+          <li>
+            <span class="edge">api <span class="arrow">→</span> provider</span>
+            <span>The proxy is a security requirement, not a performance choice. It exists so the key never reaches the client.</span>
+          </li>
+          <li>
+            <span class="edge">api <span class="arrow">→</span> db</span>
+            <span>Reads chunks and vectors for retrieval; writes turns and summaries.</span>
+          </li>
+          <li>
+            <span class="edge">worker <span class="arrow">→</span> db</span>
+            <span>Claims a job with <code>FOR UPDATE SKIP LOCKED</code>. That is the whole queue — no Redis, no broker.</span>
+          </li>
+          <li>
+            <span class="edge">api <span class="arrow">↛</span> worker</span>
+            <span>No direct channel. The API enqueues a row and returns <code>202</code>; the worker picks it up. Upload never blocks on parsing.</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= 3 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">Path one</span>
+        <h2>How a document becomes searchable</h2>
+        <p class="muted">
+          Runs in the worker. Nothing here involves a language model — this path is
+          about turning a file into rows that carry their own provenance.
+        </p>
+      </div>
+
+      <ol class="pipeline col" style="margin-top:1.5rem">
+        <li class="stage">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Upload accepted</h4>
+            <p>The file is stored, a document row is created with status <code>processing</code>, and a job row is enqueued. The API returns <code>202</code> immediately.</p>
+            <div class="tags"><span class="tag">202 Accepted</span><span class="tag">status: processing</span></div>
+          </div>
+        </li>
+
+        <li class="stage">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Identify the format, then read it</h4>
+            <p>The type comes from the bytes, not just the extension. A reader turns the file into text <strong>plus spans</strong> — and each span remembers where it came from: a page number, a sheet and cell, a paragraph index, a region of an image.</p>
+            <p class="muted">This is the step that makes citations possible later. Text without its location can be searched but never cited.</p>
+            <div class="tags"><span class="tag is-accent">PDF · DOCX · XLSX · CSV · text · image</span><span class="tag">span → location</span></div>
+          </div>
+        </li>
+
+        <li class="stage">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Chunk on evidence, not on character count</h4>
+            <p>Split points follow the document's own structure — a heading, a table row, a paragraph — rather than a sliding window over characters. A chunk that starts mid-sentence is a chunk whose citation reads badly.</p>
+            <div class="tags"><span class="tag">retrieval unit</span></div>
+          </div>
+        </li>
+
+        <li class="stage stage-key">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Embed, in batches</h4>
+            <p>Chunks go to the embedding model in batches, with retry and partial-failure handling. Batching is not an optimisation here — Phase 0 measures the provider's real limits before this is written.</p>
+            <div class="tags"><span class="tag">NVIDIA NIM embeddings</span><span class="tag">retry</span></div>
+          </div>
+        </li>
+
+        <li class="stage stage-key">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Ready only when the last chunk lands</h4>
+            <p>A document flips to <code>ready</code> when <em>every</em> chunk has an embedding. If half the batch fails, the document stays visibly failed.</p>
+            <p class="muted">A document that looks ready with holes in its index is the worst bug this system can have: it answers confidently from a corpus with pieces missing, and nothing on screen says so.</p>
+            <div class="tags"><span class="tag is-ok">ready = all chunks embedded</span><span class="tag is-stop">partial ⇒ fail loudly</span></div>
+          </div>
+        </li>
+      </ol>
+
+      <div class="pull" style="margin-top:1.5rem">
+        <p>
+          <strong>One bad file never costs you the corpus.</strong> A thousand-document
+          upload does not fail because document 447 is an encrypted PDF. The failure is
+          caught per file, recorded against that file, and the walk continues — so the
+          user sees 999 documents ready and one named failure, instead of an error and
+          no index.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================= 4 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">Path two</span>
+        <h2>How a question becomes a cited answer</h2>
+        <p class="muted">
+          Runs in the API. This is where a language model appears, and where almost
+          every rule in the system is enforced.
+        </p>
+      </div>
+
+      <ol class="pipeline col" style="margin-top:1.5rem">
+        <li class="stage">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Retrieve before the model speaks</h4>
+            <p>Two retrievers run on the question: BM25 over the chunk text and its file path, and cosine similarity over the stored embeddings. Reciprocal rank fusion merges the rankings without pretending their scores are comparable. Empirically, keyword search carries identifiers — a clause number, an invoice id — while the vector side finds the same idea in different words.</p>
+            <p class="muted">The vectors are stored in Postgres with pgvector. Today the API loads a workspace's chunks and ranks them in process; moving the ranking into SQL with an HNSW index is the spec's Phase 2, not something this page can claim is running.</p>
+            <div class="tags"><span class="tag">BM25, text + path</span><span class="tag">pgvector cosine</span><span class="tag">RRF k = 60</span></div>
+          </div>
+        </li>
+
+        <li class="stage stage-key">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Show the model numbered extracts</h4>
+            <p>The retrieved chunks are numbered 1..N in the prompt, with their file and location attached. The conversation so far is passed alongside them. Those numbers are the only way the model can refer to evidence: anything it cites that was not in this listing is rejected in code.</p>
+            <p class="muted">Nothing is injected silently. If a parent passage is added for context, it is shown and numbered too — the model never sees text it cannot cite.</p>
+            <div class="tags"><span class="tag is-ok">every extract has an id</span><span class="tag">no hidden context</span></div>
+          </div>
+        </li>
+
+        <li class="stage stage-key">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>The model chooses one of four actions</h4>
+            <p>The reply is one JSON object: <code>search</code> (retrieve again with a query the model wrote), <code>answer</code> (with the chunk numbers it rests on), <code>clarification</code> (one question that would unblock it), or <code>refusal</code> (with a reason). The loop runs at most five iterations. At the cap it must produce a best-effort answer, or refuse only when the evidence genuinely is not there.</p>
+            <p class="muted">There is no deterministic ambiguity detector in the running code: the model is given the extracts and decides whether it needs a clarification. The spec's "top two within 15%" signal is still a design, and this page should not describe it as built.</p>
+            <div class="tags"><span class="tag is-accent">max 5 iterations</span><span class="tag">one JSON object, never prose parsing</span></div>
+          </div>
+        </li>
+
+        <li class="stage stage-key">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Verify every citation against what was actually shown</h4>
+            <p>When the model returns <code>answer(text, citations)</code>, the backend checks each number against the chunks placed in front of the model during <em>this</em> turn. A citation to anything else does not survive.</p>
+            <div class="tags"><span class="tag is-ok">cited ⇒ was shown</span></div>
+          </div>
+        </li>
+
+        <li class="stage">
+          <div class="stage-n"></div>
+          <div class="stage-body">
+            <h4>Return one of three shapes</h4>
+            <p>The response is a tagged union, so the frontend renders a decision rather than guessing at prose. An answer carries its citations; a clarification carries the question and any options; a refusal carries its reason and the passages it searched.</p>
+            <div class="tags"><span class="tag is-ok">answer</span><span class="tag is-accent">clarification</span><span class="tag is-stop">refusal</span></div>
+          </div>
+        </li>
+      </ol>
+
+      <div class="loop" style="margin-top:1.5rem">
+        <div class="loop-head">
+          <h3>The four actions the model may choose</h3>
+          <span class="tag is-accent">max 5 iterations per turn</span>
+        </div>
+        <div class="tools">
+          <div class="tool">
+            <span class="sig">search(query)</span>
+            <span class="what">Retrieve again with a query it wrote itself, then decide from a fresh numbered listing.</span>
+          </div>
+          <div class="tool terminal">
+            <span class="sig">answer(text, citations)</span>
+            <span class="what">Ends the turn with an answer and the numbers of the extracts it rests on.</span>
+          </div>
+          <div class="tool terminal">
+            <span class="sig">clarification(question, options?)</span>
+            <span class="what">Ends the turn by asking one question. Allowed, but never a way to avoid answering at the cap.</span>
+          </div>
+          <div class="tool terminal">
+            <span class="sig">refusal(reason)</span>
+            <span class="what">Ends the turn with no answer, when the evidence genuinely is not there.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 5 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">The rules</span>
+        <h2>Five invariants, and what each one prevents</h2>
+        <p class="muted">
+          These are not style preferences. Each is a rule the spec states, a test
+          asserts, and a well-meaning change is likely to break. The third column is
+          the failure you would actually ship.
+        </p>
+      </div>
+
+      <div class="table-scroll" style="margin-top:1.25rem">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>What it says</th>
+              <th>What breaks without it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="inv">I1</td>
+              <td>Retrieve at chunk level; the model may cite only chunks it was actually shown. Pulling in a larger parent for context is allowed — citing that parent is not.</td>
+              <td>A citation that points at a passage the model never read. The quote on screen is not the text behind the link.</td>
+            </tr>
+            <tr>
+              <td class="inv">I2</td>
+              <td>Every chunk in the prompt carries an id the model may reference. No context is injected silently.</td>
+              <td>An answer resting on text the user cannot see and cannot check.</td>
+            </tr>
+            <tr>
+              <td class="inv">I3</td>
+              <td>The clarification loop is capped. At the cap the system answers as well as it can, and refuses only when the evidence genuinely does not exist.</td>
+              <td>A system that asks a third clarifying question instead of answering — a refusal dressed as diligence.</td>
+            </tr>
+            <tr>
+              <td class="inv">I4</td>
+              <td>Memory may shape the question. It may never be the evidence. Every turn re-retrieves.</td>
+              <td>An answer about a document that was never retrieved this turn, cited to a file from four messages ago.</td>
+            </tr>
+            <tr>
+              <td class="inv">I5</td>
+              <td>A document is <code>ready</code> only when every chunk is embedded. Partial embedding fails loudly.</td>
+              <td>Answers given confidently from an index with pieces missing, and no signal anywhere that it happened.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= 6 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">Conversation</span>
+        <h2>Memory shapes the question, never the evidence</h2>
+      </div>
+      <div class="col">
+        <p>
+          A conversation is useful because the second question can be shorter than the
+          first. It becomes dangerous at exactly the same moment: the shorter the
+          question, the more the system has to supply from memory, and supplied context
+          is context nobody retrieved.
+        </p>
+        <p>
+          So memory is confined to one job. It may rewrite an ambiguous follow-up into
+          a query that stands on its own. It may not answer anything. Every turn runs
+          retrieval again, and every citation must point at a chunk fetched during that
+          turn — which is invariant I4, and which is why the trace panel matters: the
+          user can see the search that actually happened rather than the one implied by
+          the conversation.
+        </p>
+        <p>
+          History is bounded by a token budget on recent turns, with older turns
+          collapsed into a rolling summary stored on the session row. Conversations are
+          per-session rather than per-person, because authentication is deferred — but
+          the schema is shaped so adding a <code>user_id</code> later is an added
+          column, not a redesign.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================= 7 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">Build order</span>
+        <h2>Six phases, each ending in something runnable</h2>
+        <p class="muted">
+          No phase starts before the one before it works. This is the rule that keeps
+          the project from becoming a large unverified change.
+        </p>
+      </div>
+
+      <ol class="phases" style="margin-top:1.25rem">
+        <li class="phase is-blocked">
+          <span class="pnum">Phase 0</span>
+          <div class="pbody">
+            <h3>Verify before building</h3>
+            <p>Docker Compose skeleton. Check the provider's real behaviour — which models the key reaches, how it signals rate limiting versus a billing failure, how large an embedding batch may be, and which input type the embedding models expect. Measure the 512-token ceiling on dense chunks.</p>
+            <p><strong>Blocked:</strong> needs an NVIDIA API key. Nothing model-shaped can be designed before this runs, because every number here is currently an assumption.</p>
+          </div>
+          <span class="pill blocked">Blocked</span>
+        </li>
+
+        <li class="phase is-done">
+          <span class="pnum">Phase 1</span>
+          <div class="pbody">
+            <h3>Extract the engine into a package</h3>
+            <p>The code you can read today. <code>starter/app/</code> became an installable <code>verity.engine</code> with real imports instead of the flat-directory <code>sys.path</code> hack, challenge-only modules were deleted, and the test suite was pruned to assert only what still exists.</p>
+            <p><strong>Status:</strong> committed on <code>feature/engine-extraction</code>, and closed: the PDF flate cap is now measured on the <em>decompressed output</em> rather than the compressed input, and a CMap range that names code points beyond Unicode costs arithmetic instead of 16.7 million no-op steps. Both are pinned by regression tests. One defect remains deferred — the quadratic object table in <code>_load_objects</code> — pinned by a strict xfail and recorded as a prerequisite for Phase 3, since the worker is the first code that will accept an uploaded PDF.</p>
+          </div>
+          <span class="pill done">Complete</span>
+        </li>
+
+        <li class="phase is-now">
+          <span class="pnum">Phase 2</span>
+          <div class="pbody">
+            <h3>Storage</h3>
+            <p>Postgres schema and migrations. The in-memory chunk store is replaced by pgvector for the embeddings and a <code>tsvector</code> index for keyword search, with the existing fusion code now querying both instead of two Python lists.</p>
+          </div>
+          <span class="pill now">Next</span>
+        </li>
+
+        <li class="phase">
+          <span class="pnum">Phase 3</span>
+          <div class="pbody">
+            <h3>Ingestion worker</h3>
+            <p>The job queue, the pipeline wired end to end, the batched embedding client with retry and partial-failure handling, and the document status lifecycle. This is where invariant I5 stops being a design and becomes a guarantee.</p>
+          </div>
+          <span class="pill later">Later</span>
+        </li>
+
+        <li class="phase">
+          <span class="pnum">Phase 4</span>
+          <div class="pbody">
+            <h3>Agent loop and API</h3>
+            <p>The provider interface with a real implementation and a fake one, the four actions, the capped loop with structured output, citation verification, and the FastAPI routes. The fake provider is what lets every test of the loop run with no network and no key.</p>
+          </div>
+          <span class="pill done">Complete</span>
+        </li>
+
+        <li class="phase">
+          <span class="pnum">Phase 5</span>
+          <div class="pbody">
+            <h3>Frontend</h3>
+            <p>Built: the documents list with its processing and failed states, the conversation and its answer sheet, the evidence rail, and the run-trace panel. The trace reports the queries, timings and fused ranks that actually ran; a turn whose trace was not stored says so rather than drawing a plausible one.</p>
+          </div>
+          <span class="pill done">Complete</span>
+        </li>
+
+        <li class="phase">
+          <span class="pnum">Phase 6</span>
+          <div class="pbody">
+            <h3>Evaluation</h3>
+            <p>Labelled questions over real documents, and a harness that scores the system on them. If the spec's 15% ambiguity signal ships, this is where it stops being a starting value and becomes a tuned one.</p>
+          </div>
+          <span class="pill later">Later</span>
+        </li>
+      </ol>
+    </section>
+
+    <!-- ================= 8 ================= -->
+    <section>
+      <div class="sec-head col">
+        <span class="eyebrow">Reading the code</span>
+        <h2>Where each idea lives</h2>
+        <p class="muted">
+          Everything below exists on disk now. This is the half of the design that was
+          reused rather than written — the parsers and ranking code carried over from
+          the challenge engine.
+        </p>
+      </div>
+
+      <div class="repo" style="margin-top:1.25rem">
+        <div class="repo-row">
+          <span class="path">verity/engine/ingestion/readers/</span>
+          <span class="note">One file per format. Hand-written against the standard library — no parsing dependency, so the engine imports and tests with nothing installed. Each reader returns text plus the location of every span.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">verity/engine/chunking.py</span>
+          <span class="note">Where a document is cut into retrievable units, following its own structure.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">verity/engine/normalisation.py</span>
+          <span class="note">One normalisation function, used everywhere text is compared. Two would drift, and the drift would show up as a span that cannot be found.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">verity/engine/retrieval/</span>
+          <span class="note">Keyword search, vector search, and the fusion that merges their rankings. Phase 2 rewires these to query Postgres instead of lists.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">verity/engine/embeddings.py</span>
+          <span class="note">The interface only. The challenge's local GPU backend is gone; Phase 3 supplies the provider behind it.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">verity/engine/models.py</span>
+          <span class="note">The shared vocabulary — spans, read results, statuses — that every other module speaks in.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">backend/tests/</span>
+          <span class="note">The only test tree. Runnable with no network, no corpus and no key, because anything that calls a model sits behind an interface with a fake behind it.</span>
+        </div>
+        <div class="repo-row">
+          <span class="path">legacy/</span>
+          <span class="note">The challenge material, kept deliberately and marked not authoritative. It records why some parsing code looks the way it does, and its hostile corpus is still the best ingestion test data available.</span>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        Read alongside <code>docs/superpowers/specs/2026-10-15-document-qa-product-design.md</code>
+        (the design) and <code>docs/superpowers/plans/2026-10-15-verity-engine-extraction.md</code>
+        (the work in flight). When this page and the spec disagree, the spec wins.
+      </p>
+      <p>
+        One thing blocks everything model-shaped: Phase 0 needs a provider key from
+        <code>build.nvidia.com</code>. It goes in <code>.env</code>, which is
+        git-ignored and asserted ignored by a test — never into a chat, a commit or a
+        message.
+      </p>
+    </footer>
+
+  </div>
+</div>

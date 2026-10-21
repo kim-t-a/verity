@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from verity.worker.ingest import ingest_corpus, IngestionReport
-from verity.llm.provider import FakeEmbeddingProvider
+from verity.providers import default_embedding_provider
 
 router = APIRouter(prefix="/api/ingestion")
 
@@ -73,6 +73,6 @@ async def ingest(request: IngestRequest) -> IngestResponse:
             status_code=400, detail=f"Corpus path not found: {corpus_path}"
         )
 
-    provider = FakeEmbeddingProvider()
+    provider = default_embedding_provider()
     report = ingest_corpus(corpus_path, request.workspace_id, provider)
     return IngestResponse.from_report(report)

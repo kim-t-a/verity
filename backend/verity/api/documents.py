@@ -20,10 +20,11 @@ from pydantic import BaseModel
 from verity.db import get_connection
 from verity.db.chunkstore import save_chunks, delete_chunks_for_document
 from verity.engine.ingestion import walker
+from verity.engine.ingestion.filetypes import sniff
 from verity.engine.ingestion.readers import read_file
 from verity.engine.chunking import chunks_for
 from verity.engine.models import MediaType, ReadStatus
-from verity.llm.provider import FakeProvider, FakeEmbeddingProvider
+from verity.providers import default_embedding_provider
 from verity.worker.ingest import _sha256, _insert_document, _insert_document_version
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/documents")
@@ -84,10 +85,23 @@ async def upload_document(
                     "message": "Document already exists with this content.",
                 }
 
-    # Store the file on disk.
-    storage_path = UPLOAD_DIR / f"{file_sha256}_{file.filename or 'upload'}"
+    # Store the file on disk. The browser's filename is untrusted: keep only
+    # its basename so a name containing separators cannot steer the write
+    # outside the upload directory, and fall back for "." / "..".
+    filename = Path(file.filename or "upload").name
+    if filename in {"", ".", ".."}:
+        filename = "upload"
+    storage_path = UPLOAD_DIR / f"{file_sha256}_{filename}"
     with storage_path.open("wb") as f:
         f.write(contents)
+
+    # Classify from the bytes, not from the HTTP header. A browser sends
+    # "application/pdf" for a PDF, while MediaType stores "pdf"; persisting
+    # the header value makes reading the chunk back raise ValueError. The
+    # worker already sniffs -- doing it here too keeps the two paths storing
+    # the same vocabulary.
+    verdict = sniff(contents[:4096], Path(filename).suffix)
+    media_type = str(verdict.media_type)
 
     # Insert document row in pending status.
     with get_connection() as conn:
@@ -102,9 +116,9 @@ async def upload_document(
                 """,
                 (
                     workspace_id,
-                    file.filename or "upload",
+                    filename,
                     str(storage_path),
-                    file.content_type or "application/octet-stream",
+                    media_type,
                     len(contents),
                     file_sha256,
                 ),
@@ -284,8 +298,11 @@ async def _ingest_background(
             _mark_failed(document_id, "no indexable text")
             return
 
-        # Embed (fake provider for now — real NVIDIA provider needs credentials).
-        provider = FakeEmbeddingProvider()
+        # Embed through the configured backend. The default is the real
+        # NVIDIA provider; VERITY_EMBEDDING_PROVIDER=fake pins the deterministic
+        # fake (all-zero vectors, which can never score and therefore degrade
+        # to keyword-only retrieval) for tests and offline demos.
+        provider = default_embedding_provider()
         texts = [c.text for c in chunks]
         vector_lists = provider.embed(texts)
 

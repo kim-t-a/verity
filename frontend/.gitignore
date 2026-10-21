@@ -1,0 +1,12 @@
+# Installed packages and build output. Both cost tens of thousands of files,
+# and this project lives on a 9p mount where that is felt.
+node_modules/
+dist/
+.vite/
+
+# Local overrides; the container gets VITE_PROXY_TARGET from compose instead.
+.env
+.env.*
+!.env.example
+
+*.log

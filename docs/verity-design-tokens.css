@@ -1,0 +1,49 @@
+/*
+ * Verity Design Tokens
+ * Extracted from docs/verity-how-it-works.html
+ * 
+ * Use these values in Google Stitch as custom design tokens,
+ * or in the React frontend via Tailwind CSS.
+ *
+ * Design direction:
+ * - Cool archive-paper neutrals with a single ochre "highlighter" accent
+ * - Semantic green (verified) and red (no evidence) — never decorative
+ * - IBM Plex superfamily: Serif for display, Sans for body, Mono for code/values
+ */
+
+/* ============ COLOURS ============ */
+
+--color-bg: #F5F7F8;              /* Page background — cool archive paper */
+--color-surface: #FFFFFF;         /* Card / panel surface */
+--color-surface-2: #EBEFF2;       /* Secondary surface, code blocks */
+--color-fg: #141A21;              /* Primary text */
+--color-fg-muted: #57616F;        /* Secondary text */
+--color-fg-faint: #808B99;        /* Tertiary text, labels */
+--color-rule: #D5DBE2;            /* Hairlines, borders */
+--color-rule-strong: #B8C1CB;     /* Stronger borders */
+
+--color-accent: #96500A;          /* Ochre highlighter — the product's main accent */
+--color-accent-wash: #FCF1DF;     /* Light ochre background for pull quotes */
+--color-accent-rule: #E0BC85;     /* Ochre border for highlights */
+
+--color-ok: #1C6E48;              /* Verified / semantic green */
+--color-ok-wash: #E4F2EA;         /* Light green background */
+--color-stop: #9A2323;            /* No evidence / semantic red */
+--color-stop-wash: #FBEAEA;       /* Light red background */
+
+--shadow: 0 1px 2px rgba(20, 26, 33, 0.05),
+          0 8px 24px -16px rgba(20, 26, 33, 0.28);
+
+/* ============ TYPOGRAPHY ============ */
+
+--font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+--font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+--font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+/* ============ LAYOUT ============ */
+
+--col: 68ch;      /* Measured prose column width */
+--wide: 1060px;   /* Full-width container max-width */
+
+/* ============ DARK MODE ============ */
+/* Same token names, dark values — toggle via data-theme="dark" or prefers-color-scheme */

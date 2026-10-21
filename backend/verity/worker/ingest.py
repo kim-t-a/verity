@@ -20,6 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from dotenv import load_dotenv
+
+# Same reason as in verity/api/main.py: a worker invoked directly (not as part
+# of the API process) still needs the provider keys from .env. override=False
+# keeps explicit environment authoritative.
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+
 from verity.db import get_connection
 from verity.db.chunkstore import save_chunks
 from verity.engine.embeddings import EmbeddingProvider

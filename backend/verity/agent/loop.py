@@ -16,7 +16,8 @@ shown is an invented citation and the answer is rejected.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from time import perf_counter
 from typing import Literal, Sequence
 
 from verity.engine.embeddings import EmbeddingProvider
@@ -53,6 +54,16 @@ class AgentDecision:
 
     iterations: int
     """How many model decisions were made."""
+
+    trace: dict[str, object] = field(default_factory=dict)
+    """What happened, in order, for the trace panel.
+
+    Real measurements only: the retriever components that ran, each step's
+    query and result count, the timings, and the fused ranks and scores of the
+    chunks that were shown to the model. Nothing here is inferred after the
+    fact -- a panel that guessed would be a second, disagreeing account of the
+    same turn.
+    """
 
 
 class AgentLoop:
@@ -92,6 +103,8 @@ class AgentLoop:
         history = list(session_history or [])
         retrieved_chunks: list[RetrievedChunk] = []
         iterations = 0
+        started = perf_counter()
+        steps: list[dict[str, object]] = []
 
         # Build the conversation messages for the model.
         messages: list[dict[str, str]] = []
@@ -104,15 +117,29 @@ class AgentLoop:
 
             # Retrieve chunks for the current question.
             search_query = question
+            retrieve_started = perf_counter()
             chunks = self._retrieve(search_query)
+            retrieve_ms = _elapsed_ms(retrieve_started)
             retrieved_chunks.extend(chunks)
 
             # Ask the model to decide.
+            decide_started = perf_counter()
             action = self._provider.decide(
                 messages=messages,
                 chunks=[c.chunk for c in chunks],
                 tools=["search"],
             )
+
+            step: dict[str, object] = {
+                "index": iterations,
+                "query": search_query,
+                "action": action.type,
+                "results": len(chunks),
+                "retrieve_ms": retrieve_ms,
+                "decide_ms": _elapsed_ms(decide_started),
+                "top": [_trace_chunk(c) for c in chunks[:10]],
+            }
+            steps.append(step)
 
             action_type: ActionType = action.type  # type: ignore[assignment]
 
@@ -138,6 +165,7 @@ class AgentLoop:
                     citations=[],
                     retrieved_chunks=retrieved_chunks,
                     iterations=iterations,
+                    trace=self._trace(steps, started),
                 )
 
             if action_type == "refusal":
@@ -147,19 +175,24 @@ class AgentLoop:
                     citations=[
                         {
                             "chunk_id": i,
+                            "ordinal": i,
                             "rel_path": c.chunk.rel_path,
                             "location": c.chunk.location,
+                            "text": c.chunk.text,
                         }
-                        for i, c in enumerate(retrieved_chunks)
+                        for i, c in enumerate(retrieved_chunks, start=1)
                     ],
                     retrieved_chunks=retrieved_chunks,
                     iterations=iterations,
+                    trace=self._trace(steps, started),
                 )
 
             if action_type == "answer":
-                return self._verify_and_build_answer(
+                step["cited"] = list(action.chunk_ids)
+                decision = self._verify_and_build_answer(
                     action, chunks, retrieved_chunks, iterations
                 )
+                return replace(decision, trace=self._trace(steps, started))
 
             # Unknown action type — treat as refusal.
             return AgentDecision(
@@ -168,6 +201,7 @@ class AgentLoop:
                 citations=[],
                 retrieved_chunks=retrieved_chunks,
                 iterations=iterations,
+                trace=self._trace(steps, started),
             )
 
         # Cap reached: best-effort answer from what we have, or refuse.
@@ -179,13 +213,18 @@ class AgentLoop:
                 citations=[
                     {
                         "chunk_id": i,
+                        "ordinal": i,
                         "rel_path": c.chunk.rel_path,
                         "location": c.chunk.location,
+                        "text": c.chunk.text,
                     }
-                    for i, c in enumerate(retrieved_chunks[:10])
+                    # Same five chunks the best-effort text quotes, so every
+                    # [n] in the answer has exactly one evidence row.
+                    for i, c in enumerate(retrieved_chunks[:5], start=1)
                 ],
                 retrieved_chunks=retrieved_chunks,
                 iterations=iterations,
+                trace=self._trace(steps, started),
             )
 
         return AgentDecision(
@@ -194,6 +233,7 @@ class AgentLoop:
             citations=[],
             retrieved_chunks=retrieved_chunks,
             iterations=iterations,
+            trace=self._trace(steps, started),
         )
 
     def _retrieve(self, query: str) -> list[RetrievedChunk]:
@@ -229,7 +269,12 @@ class AgentLoop:
                 c = current_chunks[position - 1]
                 citations.append(
                     {
+                        # The model cites by position, so the display numeral
+                        # must be that same position: the reader finds the
+                        # matching [n] in the answer text. Renumbering by
+                        # citation order would point at the wrong chunk.
                         "chunk_id": position,
+                        "ordinal": position,
                         "rel_path": c.chunk.rel_path,
                         "location": c.chunk.location,
                         "text": c.chunk.text,
@@ -274,6 +319,64 @@ class AgentLoop:
             f"I reached the iteration limit without a definitive answer. "
             f"Here's what I found:\n" + "\n".join(parts)
         )
+
+    def _trace(
+        self, steps: list[dict[str, object]], started: float
+    ) -> dict[str, object]:
+        """The turn's trace, from what actually ran.
+
+        ``degraded`` is reported separately from the score because a
+        keyword-only run is not merely worse: a fused RRF score means
+        ``1/(60+rank)`` in this configuration, which looks like a real score
+        and is not comparable to anything a reader has seen before. Saying the
+        vector half is missing is the only honest way to present it.
+        """
+        components = getattr(self._retriever, "components", None)
+        if components is None:
+            components = (_retriever_name(self._retriever),)
+        retrievers = list(components)
+        return {
+            "retrievers": retrievers,
+            "degraded": "vector" not in retrievers,
+            "duration_ms": _elapsed_ms(started),
+            "steps": steps,
+        }
+
+
+def _retriever_name(retriever: object) -> str:
+    """A short name for a retriever that does not expose ``components``."""
+    if isinstance(retriever, VectorRetriever):
+        return "vector"
+    if isinstance(retriever, KeywordRetriever):
+        return "keyword"
+    return type(retriever).__name__
+
+
+def _elapsed_ms(started: float) -> float:
+    """Milliseconds since ``started``, rounded to a tenth.
+
+    Rounded because the panel prints them and a raw float suggests a precision
+    the machine's clock does not have.
+    """
+    return round((perf_counter() - started) * 1000, 1)
+
+
+def _trace_chunk(result: RetrievedChunk) -> dict[str, object]:
+    """One retrieved chunk, as the trace panel needs it.
+
+    The preview is truncated: the panel shows what was ranked and why, not a
+    second copy of the document. Full text is available through the citation
+    for the chunks the model actually used.
+    """
+    return {
+        "rel_path": result.rel_path,
+        "location": result.location,
+        "score": round(result.score, 6),
+        "rank": result.rank,
+        "sources": [list(source) for source in result.sources],
+        "matched_terms": list(result.matched_terms),
+        "preview": result.text[:240],
+    }
 
 
 def make_retriever_from_index(
