@@ -5,7 +5,7 @@ endpoint, so that :class:`verity.engine.retrieval.vector.VectorRetriever` can
 do semantic (meaning-based) search alongside keyword search.
 
 This is the product-layer integration: the engine (``verity.engine``) defines
-the :class:`~verity.engine.embeddings.EmbeddingProvider` Protocol and knows
+the :class:`~verity.engine.embedding_provider.EmbeddingProvider` Protocol and knows
 nothing about HTTP or NVIDIA. This module is the bridge that satisfies the
 Protocol using the real service. It uses only the standard library
 (``urllib.request``) so it adds no third-party dependencies.
@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from typing import Sequence
 
-from verity.engine.embeddings import EmbeddingProvider
+from verity.engine.embedding_provider import EmbeddingProvider
 
 #: How many texts are sent in one HTTP request. NVIDIA's endpoint accepts a
 #: list of inputs per call; batching keeps each request bounded and amortises

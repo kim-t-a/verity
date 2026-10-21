@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from verity.worker.ingest import ingest_corpus, IngestionReport
-from verity.providers import default_embedding_provider
+from verity.provider_factory import default_embedding_provider
 
 router = APIRouter(prefix="/api/ingestion")
 

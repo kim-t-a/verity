@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from conftest import CORPUS_DIR
 
-from verity.engine.chunkstore import (
+from verity.engine.index_types import (
     ChunkIndex,
     IndexIncompatible,
     IndexManifest,

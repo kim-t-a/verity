@@ -28,13 +28,13 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
 from verity.db import get_connection
-from verity.db.chunkstore import save_chunks
-from verity.engine.embeddings import EmbeddingProvider
+from verity.db.chunk_repository import save_chunks
+from verity.engine.embedding_provider import EmbeddingProvider
 from verity.engine.chunking import chunks_for
 from verity.engine.ingestion import walker
 from verity.engine.ingestion.readers import read_file
 from verity.engine.models import MediaType, ReadStatus
-from verity.engine.nvidia_embeddings import NvidiaEmbeddingProvider, NvidiaEmbeddingError
+from verity.engine.nvidia_embedding_provider import NvidiaEmbeddingProvider, NvidiaEmbeddingError
 
 
 @dataclass(frozen=True)

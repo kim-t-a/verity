@@ -49,9 +49,9 @@ from __future__ import annotations
 
 import math
 
-from verity.engine.chunkstore import ChunkIndex
+from verity.engine.index_types import ChunkIndex
 from verity.engine.config import MIN_VECTOR_SIMILARITY, RETRIEVAL_LIMIT
-from verity.engine.embeddings import EmbeddingProvider
+from verity.engine.embedding_provider import EmbeddingProvider
 from verity.engine.models import Chunk
 from verity.engine.retrieval import RetrievalError, RetrievedChunk, rank
 

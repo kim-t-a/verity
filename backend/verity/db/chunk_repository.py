@@ -1,9 +1,9 @@
 """PostgreSQL-backed chunk store.
 
-Replaces the challenge-era JSONL on-disk index (``verity/engine/chunkstore.py``)
+Replaces the challenge-era JSONL on-disk index (``verity/engine/index_types.py``)
 with PostgreSQL tables. Writes chunks and their embedding vectors to the
 ``chunks`` table and reads them back as
-:class:`~verity.engine.chunkstore.ChunkIndex` objects so the existing
+:class:`~verity.engine.index_types.ChunkIndex` objects so the existing
 retrieval layer works unchanged.
 
 The engine (``verity.engine``) is pure standard library and knows nothing
@@ -17,7 +17,7 @@ from typing import Sequence
 from psycopg2.extras import execute_values
 
 from verity.db import get_connection
-from verity.engine.chunkstore import ChunkIndex, IndexManifest
+from verity.engine.index_types import ChunkIndex, IndexManifest
 from verity.engine.models import Chunk, MediaType
 
 

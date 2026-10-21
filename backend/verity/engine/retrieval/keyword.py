@@ -54,7 +54,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from verity.engine.chunkstore import ChunkIndex
+from verity.engine.index_types import ChunkIndex
 from verity.engine.config import BM25_B, BM25_K1, PATH_FIELD_WEIGHT, RETRIEVAL_LIMIT
 from verity.engine.models import Chunk
 from verity.engine.retrieval import RetrievedChunk, rank

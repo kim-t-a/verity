@@ -19,7 +19,7 @@ import math
 
 import pytest
 
-from verity.engine.chunkstore import ChunkIndex, build_manifest, load, save
+from verity.engine.index_types import ChunkIndex, build_manifest, load, save
 from verity.engine.config import RETRIEVAL_LIMIT
 from verity.engine.models import Chunk, MediaType
 from verity.engine.retrieval import Retriever

@@ -14,9 +14,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from verity.db import get_connection
-from verity.db.chunkstore import load_all_chunks
+from verity.db.chunk_repository import load_all_chunks
 from verity.agent.loop import AgentLoop
-from verity.providers import default_embedding_provider, default_llm_provider
+from verity.provider_factory import default_embedding_provider, default_llm_provider
 from verity.engine.retrieval.keyword import KeywordRetriever
 from verity.engine.retrieval.vector import VectorRetriever, VectorUnavailable
 from verity.engine.retrieval.hybrid import HybridRetriever

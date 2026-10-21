@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from time import perf_counter
 from typing import Literal, Sequence
 
-from verity.engine.embeddings import EmbeddingProvider
+from verity.engine.embedding_provider import EmbeddingProvider
 from verity.engine.models import Chunk
 from verity.engine.retrieval.hybrid import HybridRetriever
 from verity.engine.retrieval.keyword import KeywordRetriever
@@ -390,7 +390,7 @@ def make_retriever_from_index(
     (provider mismatch, no vectors), falls back to keyword-only (degraded
     mode — spec: "One retriever down is a degraded mode, not a silent one").
     """
-    from verity.engine.chunkstore import ChunkIndex, IndexManifest
+    from verity.engine.index_types import ChunkIndex, IndexManifest
 
     if not index_chunks:
         # No chunks — keyword retriever over empty data returns nothing.

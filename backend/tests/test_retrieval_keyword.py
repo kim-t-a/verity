@@ -22,7 +22,7 @@ import pytest
 from conftest import CORPUS_DIR
 
 from verity.engine.chunking import chunks_for_all
-from verity.engine.chunkstore import ChunkIndex, build_manifest
+from verity.engine.index_types import ChunkIndex, build_manifest
 from verity.engine.config import RETRIEVAL_LIMIT
 from verity.engine.ingestion import walker
 from verity.engine.ingestion.readers import read_file

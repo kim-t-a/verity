@@ -30,7 +30,7 @@ if env_file.exists():
         if name in ("NVIDIA_API_KEY", "NVIDIA_API_BASE_URL") and value:
             os.environ[name] = value
 
-from verity.engine.nvidia_embeddings import NvidiaEmbeddingProvider, NvidiaEmbeddingError  # noqa: E402
+from verity.engine.nvidia_embedding_provider import NvidiaEmbeddingProvider, NvidiaEmbeddingError  # noqa: E402
 
 # Lengths to test, in characters. 2000 is MAX_CHUNK_CHARS.
 LENGTHS = [500, 1000, 2000, 3000, 4000]

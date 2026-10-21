@@ -1,7 +1,7 @@
 """Tests for the NVIDIA LLM provider.
 
 No network is touched: ``urllib.request.urlopen`` is patched, the same
-technique ``test_nvidia_embeddings.py`` uses. What is verified:
+technique ``test_nvidia_embedding_provider.py`` uses. What is verified:
 
 - the provider satisfies the ``LLMProvider`` Protocol,
 - missing credentials refuse rather than improvise,

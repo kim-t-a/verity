@@ -19,7 +19,7 @@ from verity.api.ingestion import router as ingestion_router
 
 # The provider keys live in .env at the repo root. Loading here (module
 # import, before any route runs) means uvicorn needs no shell profile
-# wrapper, and the backends in verity.providers can read os.environ at
+# wrapper, and the backends in verity.provider_factory can read os.environ at
 # construction. override=False: explicit environment wins over .env.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(_REPO_ROOT / ".env", override=False)

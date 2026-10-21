@@ -18,13 +18,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from verity.db import get_connection
-from verity.db.chunkstore import save_chunks, delete_chunks_for_document
+from verity.db.chunk_repository import save_chunks, delete_chunks_for_document
 from verity.engine.ingestion import walker
 from verity.engine.ingestion.filetypes import sniff
 from verity.engine.ingestion.readers import read_file
 from verity.engine.chunking import chunks_for
 from verity.engine.models import MediaType, ReadStatus
-from verity.providers import default_embedding_provider
+from verity.provider_factory import default_embedding_provider
 from verity.worker.ingest import _sha256, _insert_document, _insert_document_version
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/documents")

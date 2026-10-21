@@ -4,7 +4,7 @@ The real answering model, satisfying the same
 :class:`~verity.llm.provider.LLMProvider` Protocol the tests exercise with
 :class:`~verity.llm.provider.FakeProvider`. Standard-library HTTP only
 (``urllib.request``), mirroring
-:class:`~verity.engine.nvidia_embeddings.NvidiaEmbeddingProvider`, so the
+:class:`~verity.engine.nvidia_embedding_provider.NvidiaEmbeddingProvider`, so the
 product layer stays out of the engine's zero-dependency guarantee.
 
 The decision protocol is structured JSON, not tool-calling: the system

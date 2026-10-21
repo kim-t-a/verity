@@ -5,7 +5,7 @@ These tests write to and read from the real PostgreSQL database started with
 
 The chunk store replaces the challenge-era JSONL index: chunks and vectors
 live in PostgreSQL tables and are read back as
-:class:`~verity.engine.chunkstore.ChunkIndex` objects so the existing
+:class:`~verity.engine.index_types.ChunkIndex` objects so the existing
 retrieval layer works unchanged.
 """
 
@@ -14,13 +14,13 @@ from __future__ import annotations
 import psycopg2
 import pytest
 
-from verity.db.chunkstore import (
+from verity.db.chunk_repository import (
     save_chunks,
     load_all_chunks,
     delete_chunks_for_document,
     chunk_count,
 )
-from verity.engine.chunkstore import ChunkIndex
+from verity.engine.index_types import ChunkIndex
 from verity.engine.models import Chunk, MediaType
 
 

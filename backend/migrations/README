@@ -1,1 +1,90 @@
-Generic single-database configuration.
+# Database migrations
+
+This folder is the database schema's change history, managed by **Alembic**.
+Each file in `versions/` is one ordered change with an `upgrade()` and a
+`downgrade()`. Alembic records the applied revision in the `alembic_version`
+table, so it only ever runs what a database has not seen.
+
+## The pieces
+
+| File | Job |
+|---|---|
+| `../alembic.ini` | Where migrations live and the database URL. |
+| `env.py` | Opens the connection and drives the migration run. |
+| `script.py.mako` | Template used when generating a new revision. |
+| `versions/*.py` | The actual schema changes. |
+
+## Commands
+
+Run from `backend/`:
+
+```bash
+alembic current        # which revision this database is on
+alembic heads          # the newest revision in the files
+alembic upgrade head   # apply everything pending
+alembic downgrade -1   # undo the last change
+alembic history        # the chain, oldest to newest
+```
+
+The Docker image runs `alembic upgrade head` before starting uvicorn, so a
+container never serves on an incomplete schema.
+
+## The current chain
+
+```
+ef07882c3816  initial_schema
+      │
+      ▼
+0072796284be  embedding_unconstrained_dimension
+```
+
+- **`ef07882c3816`** creates every table: `workspaces`, `documents`,
+  `document_versions`, `chunks`, `sessions`, `messages`, `citations`,
+  `memories`, `jobs`, plus indexes.
+- **`0072796284be`** removes the fixed 2048-dimension limit on
+  `chunks.embedding`, because different embedding models produce different
+  widths.
+
+## How a migration runs
+
+1. Alembic reads `alembic.ini`.
+2. It imports `env.py`, which connects using `sqlalchemy.url`.
+3. It reads `alembic_version` to find the current revision.
+4. It walks the chain from current to `head`, calling each file's `upgrade()`.
+5. Each step updates `alembic_version`. A failure rolls the whole run back.
+
+## Adding a migration
+
+```bash
+cd backend
+alembic revision -m "add a column for language"
+```
+
+Then write raw SQL in the new file:
+
+```python
+def upgrade() -> None:
+    op.execute("ALTER TABLE documents ADD COLUMN language TEXT")
+
+def downgrade() -> None:
+    op.execute("ALTER TABLE documents DROP COLUMN language")
+```
+
+`--autogenerate` does not work here: `env.py` sets `target_metadata = None`
+because the project has no SQLAlchemy model classes. Every migration is
+hand-written SQL.
+
+Test `upgrade`, then `downgrade`, then `upgrade` again. A migration whose
+downgrade was never run is a migration that may not come back.
+
+## First run on a brand-new database
+
+The schema uses pgvector's `vector` type, but no migration creates the
+extension. Enable it once before upgrading:
+
+```bash
+docker compose exec db psql -U verity -d verity -c 'CREATE EXTENSION IF NOT EXISTS vector'
+alembic upgrade head
+```
+
+Without it, `CREATE TABLE chunks` fails with `type "vector" does not exist`.

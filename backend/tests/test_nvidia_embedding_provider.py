@@ -1,7 +1,7 @@
 """Tests for the NVIDIA embedding provider.
 
 These tests never call the real NVIDIA service. They use a hand-written fake
-that satisfies the same :class:`~verity.engine.embeddings.EmbeddingProvider`
+that satisfies the same :class:`~verity.engine.embedding_provider.EmbeddingProvider`
 Protocol, and a fake HTTP handler for the success path. The real provider is
 verified against NVIDIA's endpoint only when you set ``NVIDIA_API_KEY`` and
 run against the live service -- that is your call, and it belongs to Phase 0
@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from verity.engine.embeddings import EmbeddingProvider
-from verity.engine.nvidia_embeddings import (
+from verity.engine.embedding_provider import EmbeddingProvider
+from verity.engine.nvidia_embedding_provider import (
     NvidiaEmbeddingError,
     NvidiaEmbeddingProvider,
 )

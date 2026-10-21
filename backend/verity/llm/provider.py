@@ -137,7 +137,7 @@ class FakeEmbeddingProvider:
     """Deterministic fake embedding provider for tests.
 
     Returns the same vector for every input. Satisfies the
-    :class:`~verity.engine.embeddings.EmbeddingProvider` Protocol.
+    :class:`~verity.engine.embedding_provider.EmbeddingProvider` Protocol.
     """
 
     def __init__(self, dimension: int = 4) -> None:

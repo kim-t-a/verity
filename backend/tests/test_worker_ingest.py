@@ -15,7 +15,7 @@ import psycopg2
 import pytest
 
 from verity.engine.models import MediaType, ReadResult, ReadStatus, TextSpan
-from verity.engine.nvidia_embeddings import EmbeddingProvider
+from verity.engine.nvidia_embedding_provider import EmbeddingProvider
 from verity.worker.ingest import ingest_corpus, IngestionReport
 
 

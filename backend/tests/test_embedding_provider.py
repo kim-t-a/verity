@@ -21,7 +21,7 @@ manifest.
 
 from __future__ import annotations
 
-from verity.engine.embeddings import EmbeddingProvider
+from verity.engine.embedding_provider import EmbeddingProvider
 
 
 class StubProvider:

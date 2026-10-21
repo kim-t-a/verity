@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import os
 
-from verity.engine.embeddings import EmbeddingProvider
-from verity.engine.nvidia_embeddings import NvidiaEmbeddingProvider
+from verity.engine.embedding_provider import EmbeddingProvider
+from verity.engine.nvidia_embedding_provider import NvidiaEmbeddingProvider
 from verity.llm.nvidia_provider import NvidiaLLMProvider
 from verity.llm.provider import FakeEmbeddingProvider, FakeProvider, LLMProvider
 
