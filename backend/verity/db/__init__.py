@@ -16,9 +16,14 @@ import psycopg2
 from psycopg2 import pool
 
 #: Connection parameters read from environment with sensible local defaults.
+#: The default host is 127.0.0.1, not "localhost": on Windows, psycopg2 tries
+#: "localhost" as IPv6 ::1 first and each publication that doesn't answer
+#: costs the full TCP fallback timeout (~21 s per connection, measured
+#: 2026-10-21). Docker publishes the port on all interfaces, so the loopback
+#: address is both correct and ~1000x faster.
 #: The API key and other secrets live in .env and are never hardcoded here.
 DB_CONFIG = {
-    "host": os.environ.get("VERITY_DB_HOST", "localhost"),
+    "host": os.environ.get("VERITY_DB_HOST", "127.0.0.1"),
     "port": int(os.environ.get("VERITY_DB_PORT", "5432")),
     "dbname": os.environ.get("VERITY_DB_NAME", "verity"),
     "user": os.environ.get("VERITY_DB_USER", "verity"),

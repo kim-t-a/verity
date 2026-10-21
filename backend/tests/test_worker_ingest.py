@@ -53,7 +53,7 @@ def clean_documents(db_conn: psycopg2.extensions.connection):
 
 def _connect() -> psycopg2.extensions.connection:
     return psycopg2.connect(
-        host="localhost",
+        host="127.0.0.1",
         port=5432,
         dbname="verity",
         user="verity",

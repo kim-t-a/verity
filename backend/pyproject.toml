@@ -10,10 +10,20 @@ requires-python = ">=3.12"
 # The engine is pure standard library on purpose: hand-written parsers for
 # PDF, DOCX and XLSX mean there is no dependency graph to untangle, and no
 # transitive package that can change what a citation means.
-dependencies = []
+# The engine is pure stdlib; these are the *product* layer's dependencies
+# (api/, worker/, db/), not the engine's — test_engine_no_bare_imports.py still
+# asserts the engine itself imports nothing third-party.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "psycopg2-binary>=2.9",
+    "python-multipart>=0.0.9",
+    "alembic>=1.13",
+    "python-dotenv>=1.0",
+]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1"]
+dev = ["pytest==9.1.1", "httpx2"]  # httpx2: starlette's TestClient imports it
 
 [tool.setuptools.packages.find]
 include = ["verity*"]

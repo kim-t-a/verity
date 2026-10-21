@@ -119,8 +119,12 @@ class TestTheCommandLine:
     """What is actually executed -- asserted without executing it."""
 
     def test_the_image_comes_before_the_output_base_and_the_options(self) -> None:
-        argv = ocr_engine.recognition_argv(["tesseract"], Path("/corpus/a.png"))
-        assert argv[1] == "/corpus/a.png"
+        path = Path("/corpus/a.png")
+        argv = ocr_engine.recognition_argv(["tesseract"], path)
+        # Compared against how Python renders the path, not a literal: the
+        # subject under test is argument order, and "\corpus\a.png" and
+        # "/corpus/a.png" are the same path on their own host.
+        assert argv[1] == str(path)
         assert argv[2] == "stdout"
 
     def test_the_configured_segmentation_mode_is_passed(self) -> None:

@@ -62,6 +62,28 @@ _TSV_CONFIG = "tsv"
 _MAX_ERROR_CHARS = 200
 
 
+def _split_engine_command(configured: str) -> list[str]:
+    """Split the engine setting into an argument vector.
+
+    On a POSIX host the setting follows shlex rules, so it may quote a path
+    with spaces and carry arguments. On Windows the POSIX rules are wrong:
+    the default splitter treats ``\\`` as an escape character, so it eats
+    every backslash in a Windows path and ``D:\\mc3-disk\\...`` arrives as
+    ``D:mc3-disk...``, which never resolves. There the split is done with
+    POSIX splitting off -- which preserves backslashes, the only change that
+    matters -- and each part is unwrapped of the surrounding quotes it keeps.
+    """
+    if os.name == "nt":
+        parts = shlex.split(configured, posix=False)
+        return [
+            part[1:-1]
+            if len(part) > 1 and part[0] == part[-1] and part[0] in "\"'"
+            else part
+            for part in parts
+        ]
+    return shlex.split(configured)
+
+
 class EngineFailed(Exception):
     """The engine was found and could not read this file.
 
@@ -88,7 +110,7 @@ def find_engine() -> list[str] | None:
     configured = os.environ.get(OCR_ENGINE_ENV, "").strip() or DEFAULT_OCR_ENGINE
 
     try:
-        parts = shlex.split(configured)
+        parts = _split_engine_command(configured)
     except ValueError:
         # Unbalanced quotes in the environment. There is no engine to run, and
         # the alternative -- raising -- would abort the whole indexing pass over
