@@ -17,6 +17,7 @@ from verity.agent.loop import (
     AgentLoop,
     MAX_ITERATIONS,
     RESTYLE_NOTE,
+    RESTYLE_RETRY_NOTE,
     make_retriever_from_index,
 )
 
@@ -379,6 +380,62 @@ def test_a_restyle_follow_up_tells_the_model_to_rephrase() -> None:
     assert {"role": "system", "content": RESTYLE_NOTE} in messages
     # The user's own words are still the last thing the model reads.
     assert messages[-1] == {"role": "user", "content": "explain in simple manner"}
+
+
+def test_a_not_understood_follow_up_gets_the_explanation_note() -> None:
+    """The note is about explaining the reference passage, not rewording."""
+    retriever = RecordingRetriever(["maximum junction temperature is 94 C"])
+    provider = FakeProvider(
+        actions=[LLMAction("answer", text="It means 94 C [1].", chunk_ids=[1])]
+    )
+    loop = AgentLoop(retriever, provider)
+
+    loop.run("i am not understanding", session_history=HISTORY)
+
+    messages = provider.calls[0]["messages"]
+    assert {"role": "system", "content": RESTYLE_NOTE} in messages
+
+
+def test_a_restyle_is_never_answered_with_a_clarification() -> None:
+    """Invariant I3 on the one follow-up whose intent is never ambiguous.
+
+    The model read "i am not understanding" as a question it could ask about
+    ("which part?") and returned a clarification. The extracts were already
+    shown and the previous answer is the reference, so being asked what is
+    unclear is avoidance, not a clarification.
+    """
+    retriever = RecordingRetriever(["maximum junction temperature is 94 C"])
+    provider = FakeProvider(
+        actions=[
+            LLMAction("clarification", question="Which part is unclear?"),
+            LLMAction("answer", text="It means 94 C [1].", chunk_ids=[1]),
+        ]
+    )
+    loop = AgentLoop(retriever, provider)
+
+    decision = loop.run("i am not understanding", session_history=HISTORY)
+
+    assert decision.kind == "answer"
+    assert len(provider.calls) == 2
+    assert {"role": "system", "content": RESTYLE_RETRY_NOTE} in provider.calls[1][
+        "messages"
+    ]
+
+
+def test_an_ordinary_follow_up_may_still_clarify() -> None:
+    retriever = RecordingRetriever(["value 94"])
+    provider = FakeProvider(
+        actions=[LLMAction("clarification", question="Do you mean the other one?")]
+    )
+    loop = AgentLoop(retriever, provider)
+
+    decision = loop.run(
+        "Could you tell me whether that limit applies when the board is upside down?",
+        session_history=HISTORY,
+    )
+
+    assert decision.kind == "clarification"
+    assert len(provider.calls) == 1
 
 
 def test_an_ordinary_follow_up_gets_no_restyle_note() -> None:

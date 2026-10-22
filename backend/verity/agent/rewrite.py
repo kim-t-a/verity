@@ -53,7 +53,9 @@ _WORD = re.compile(r"[a-z0-9']+")
 #: restatement, so summar* is not here.
 _RESTYLE_STEMS = ("simpl", "rephras", "shorten", "eli5")
 
-#: Whole phrases that mean "say the last answer differently".
+#: Whole phrases that mean "say the last answer differently". The
+#: "I don't understand" family is here because it is the same request in the
+#: user's own words: the answer was not an explanation, and they want one.
 _RESTYLE_PHRASES = (
     "in other words",
     "say that again",
@@ -61,15 +63,27 @@ _RESTYLE_PHRASES = (
     "plain words",
     "break that down",
     "explain like",
+    "not understanding",
+    "don't understand",
+    "don’t understand",
+    "do not understand",
+    "didn't understand",
+    "didn’t understand",
+    "makes no sense",
+    "doesn't make sense",
+    "doesn’t make sense",
+    "not following",
+    "lost me",
 )
 
 
 def looks_like_restyle(question: str) -> bool:
-    """Whether the message asks for the previous answer, worded differently.
+    """Whether the message asks for the previous answer, explained differently.
 
     The distinction matters because a restyle is the one follow-up where the
     model must *not* just re-extract the same sentence: the evidence is the
-    same, and the work is the wording.
+    same, and the work is the explanation. "Explain in simple manner" and "I
+    don't understand" are the same request.
     """
     text = question.lower()
     if any(phrase in text for phrase in _RESTYLE_PHRASES):

@@ -39,14 +39,37 @@ from verity.agent.rewrite import (
 MAX_ITERATIONS = 5
 
 #: Appended to the conversation when the user asks for the same answer in
-#: plainer words. Without it the model re-extracts the same sentence from the
-#: same chunk and calls that an answer -- which is what "explain in simple
-#: manner" used to produce.
+#: plainer words, or says they do not understand it. Without it the model
+#: re-extracts the same sentence from the same chunk and calls that an answer
+#: -- "explain in simple manner" used to return the previous answer verbatim.
+#:
+#: The extracts are named as the reference on purpose: an explanation that
+#: reaches for what the model already knows is an answer from outside the
+#: corpus, which is not this product. The instruction to unpack a term only
+#: "where the extracts explain it" is the line that keeps that true.
 RESTYLE_NOTE = (
-    "The user is asking you to restate your previous answer more simply, not "
-    "to answer a new question. Say the same supported fact in plainly "
-    "different words: shorter sentences, everyday terms, no repeated "
-    "sentence. Add nothing the extracts do not support."
+    "The user is asking you to explain your previous answer, not to answer a "
+    "new question. Use the document extracts shown this turn as your "
+    "reference and teach from them: take the passage the previous answer came "
+    "from and walk through it. Put its sentence in everyday words, and unpack "
+    "the numbers, units and technical terms -- what each one means here and "
+    "what the passage says follows from it. A short paragraph is fine; use a "
+    "few short sentences, not one clipped sentence. Do not repeat your "
+    "previous answer's wording. Add no fact, definition or consequence the "
+    "extracts do not state: if they do not define a term, do not define it. "
+    "Cite the extract each part comes from. Do not answer with a clarification "
+    "question: nothing is ambiguous here -- explain the previous answer."
+)
+
+#: Shown when the model answers a restyle with a clarification instead. The
+#: question "what part is unclear?" is a question the user already answered
+#: ("all of it, in plain words"), so the loop gives the model one more chance
+#: with the same extracts. The iteration cap still applies: a model that will
+#: not explain ends in the best-effort answer, never in an unbounded loop.
+RESTYLE_RETRY_NOTE = (
+    "The user has already asked for this explanation and the extracts are "
+    "shown above. Do not ask a clarification question. Reply with action "
+    "\"answer\" and explain the passage in the extracts."
 )
 
 
@@ -124,15 +147,15 @@ class AgentLoop:
         started = perf_counter()
         steps: list[dict[str, object]] = []
 
-        # Build the conversation messages for the model.
+        # A restyle is the one follow-up where the same evidence yields a
+        # different answer: the fact stays, the explanation must change. The
+        # instruction is a system note, not a rewritten user message, so the
+        # model still sees exactly what the user typed.
+        restyle = bool(session_history) and looks_like_restyle(question)
         messages: list[dict[str, str]] = []
         if session_history:
             messages.extend(session_history)
-            # A restyle is the one follow-up where the same evidence yields a
-            # different answer: the fact stays, the wording must change. The
-            # instruction is a system note, not a rewritten user message, so
-            # the model still sees exactly what the user typed.
-            if looks_like_restyle(question):
+            if restyle:
                 messages.append({"role": "system", "content": RESTYLE_NOTE})
         messages.append({"role": "user", "content": question})
 
@@ -212,6 +235,14 @@ class AgentLoop:
                 continue
 
             if action_type == "clarification":
+                # Invariant I3: on a restyle, clarifying is never a way to
+                # avoid explaining. One more decision, with the same extracts
+                # and a note that says so; the iteration cap still binds.
+                if restyle and iteration + 1 < self._max_iterations:
+                    messages.append(
+                        {"role": "system", "content": RESTYLE_RETRY_NOTE}
+                    )
+                    continue
                 return AgentDecision(
                     kind="clarification",
                     text=action.question or "Could you clarify your question?",

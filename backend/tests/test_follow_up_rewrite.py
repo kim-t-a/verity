@@ -44,6 +44,20 @@ def test_asks_to_simplify_is_a_restyle() -> None:
     assert looks_like_restyle("can you rephrase that?")
 
 
+def test_saying_it_was_not_understood_is_a_restyle() -> None:
+    """The same request in the user's own words, not a new question."""
+    assert looks_like_restyle("i am not understanding")
+    assert looks_like_restyle("I don't understand")
+    assert looks_like_restyle("I don’t understand")
+    assert looks_like_restyle("that makes no sense")
+    assert looks_like_restyle("sorry, you lost me")
+
+
+def test_a_not_understood_message_is_also_a_follow_up() -> None:
+    """It must be rewritten to the previous topic before it is searched."""
+    assert looks_like_follow_up("i am not understanding", HISTORY)
+
+
 def test_in_other_words_is_a_restyle() -> None:
     assert looks_like_restyle("in other words?")
     assert looks_like_restyle("say that again in plain english")

@@ -76,8 +76,10 @@ chunk number in square brackets immediately after the fact it supports, for \
 example "Maximum junction temperature is 94 C [1]." Cite a chunk once per \
 claim; a wall of bracketed numbers is not evidence a reader can follow.
   When the user asks you to explain, simplify or rephrase what you just said, \
-say the same fact freshly and more plainly from the extracts shown this turn. \
-Do not repeat your previous wording.
+or says they do not understand it, explain the passage it came from using the \
+extracts shown this turn: unpack its numbers and terms, say what it means in \
+everyday words, and do not repeat your previous wording. Add nothing the \
+extracts do not state. Do not clarify in that case: the request is clear.
 - clarification: the question is ambiguous and one short question would fix \
 it. Reply {"action": "clarification", "question": "<one question>"}. Do not \
 clarify when you can answer.
@@ -95,8 +97,10 @@ search query.
 - Resolve what the message points at from the conversation: pronouns, "the \
 other one", "that again".
 - If the message asks for a different style, length or level of detail \
-("explain simply", "shorten it", "say that again"), the query is the subject \
-of the previous answer. Drop the instruction about how to answer.
+("explain simply", "shorten it", "say that again") or says the previous \
+answer was not understood ("I don't understand", "that makes no sense"), the \
+query is the subject of the previous answer. Drop the instruction about how \
+to answer.
 - Keep the words a document would contain.
 - If the message names its own topic and stands alone, return it unchanged.
 - Reply with the query alone: one line, no quotes, no preamble, no answer."""
