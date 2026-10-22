@@ -213,6 +213,18 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Or, to have the addresses printed for you:
+
+```bash
+bash start.sh --build
+```
+
+`start.sh` starts the stack in the background, waits until it is running,
+then prints the app, API docs, and health URLs. Use `bash start.sh` on later
+runs; add `--build` only after changing code or dependencies. (`chmod` is a
+no-op on the Windows-mounted checkout, which is why the script is invoked
+through `bash` rather than as `./start.sh`.)
+
 Open:
 
 - App: <http://127.0.0.1:5173>
