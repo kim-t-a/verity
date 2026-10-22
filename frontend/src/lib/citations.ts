@@ -79,3 +79,21 @@ export function knownNumerals(citations: Citation[]): Set<number> {
       .filter((numeral): numeral is number => numeral !== null)
   );
 }
+
+/**
+ * A short opening quote from a chunk, cut at a word boundary.
+ *
+ * A chunk is a retrieval unit -- for a DOCX it can span a dozen paragraphs.
+ * Printing it whole buries the two sentences the reader needs to check the
+ * answer; the rest belongs behind an explicit "full passage".
+ */
+export function excerpt(text: string, limit = 240): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= limit) return collapsed;
+
+  const cut = collapsed.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(" ");
+  // A limit this short is a caller error, not a reason to return one word.
+  const body = lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${body.trimEnd()}…`;
+}

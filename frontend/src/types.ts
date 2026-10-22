@@ -56,7 +56,14 @@ export type AgentAction = "search" | "answer" | "clarification" | "refusal";
 
 export interface TraceStep {
   index: number;
+  /** The query this step actually searched. */
   query: string;
+  /** Set when a follow-up was rewritten: what the user typed. */
+  original_query?: string;
+  /** Set when a rewrite was attempted, whatever it produced. */
+  rewrite_attempted?: boolean;
+  /** Set when the rewrite was attempted and failed; the literal query ran. */
+  rewrite_failed?: boolean;
   action: AgentAction;
   results: number;
   retrieve_ms: number;

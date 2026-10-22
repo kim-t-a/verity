@@ -98,14 +98,35 @@ class FakeProvider:
     search, and misbehavior (citing chunks that weren't shown).
     """
 
-    def __init__(self, actions: list[LLMAction] | None = None) -> None:
+    def __init__(
+        self,
+        actions: list[LLMAction] | None = None,
+        rewrites: list[str] | None = None,
+    ) -> None:
         self._actions = list(actions or [])
         self._index = 0
+        self._rewrites = list(rewrites or [])
         self.calls: list[dict[str, object]] = []
+        self.rewrite_calls: list[dict[str, object]] = []
 
     @property
     def model_id(self) -> str:
         return "fake-provider"
+
+    def rewrite_follow_up(
+        self, *, question: str, history: list[dict[str, str]]
+    ) -> str:
+        """Return a configured rewrite, or the question unchanged.
+
+        Unchanged is the honest default: a fake that invented a topic would
+        make the loop's tests assert a rewrite that never happened.
+        """
+        self.rewrite_calls.append(
+            {"question": question, "history": list(history)}
+        )
+        if self._rewrites:
+            return self._rewrites.pop(0)
+        return question
 
     def decide(
         self,

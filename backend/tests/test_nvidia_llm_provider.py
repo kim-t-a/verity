@@ -263,5 +263,68 @@ def test_the_environment_can_turn_the_thinking_switch_off(monkeypatch) -> None:
     assert "chat_template_kwargs" not in body
 
 
+# --- follow-up rewriting ---------------------------------------------------
+#
+# The loop decides whether a message needs this; the provider only performs
+# it. These tests pin what the endpoint is asked and what comes back, without
+# touching the network.
+
+REWRITE_HISTORY = [
+    {"role": "user", "content": "What is the maximum junction temperature?"},
+    {"role": "assistant", "content": "94 C."},
+]
+
+
+def _capture_rewrite(
+    provider: NvidiaLLMProvider,
+    question: str,
+    history: list[dict[str, str]],
+    content: str,
+) -> tuple[str, dict]:
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(_completion(content))
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        rewritten = provider.rewrite_follow_up(question=question, history=history)
+    return rewritten, captured["body"]
+
+
+def test_a_follow_up_rewrite_returns_the_query_alone() -> None:
+    rewritten, body = _capture_rewrite(
+        _provider(),
+        "explain in simple manner",
+        REWRITE_HISTORY,
+        '  "maximum junction temperature"  ',
+    )
+    assert rewritten == "maximum junction temperature"
+    # The conversation is what makes the reference resolvable.
+    sent = body["messages"][-1]["content"]
+    assert "94 C." in sent
+    assert "explain in simple manner" in sent
+
+
+def test_a_multi_line_rewrite_is_collapsed_to_one_line() -> None:
+    """Retrieval takes a query, not a paragraph."""
+    rewritten, _ = _capture_rewrite(
+        _provider(),
+        "and what about it in celsius?",
+        REWRITE_HISTORY,
+        "maximum junction temperature in celsius\n\nThis is the query.",
+    )
+    assert "\n" not in rewritten
+    assert rewritten.startswith("maximum junction temperature in celsius")
+
+
+def test_only_the_recent_history_is_shown_to_the_rewriter() -> None:
+    history = [{"role": "user", "content": f"old {i}"} for i in range(10)]
+    _, body = _capture_rewrite(_provider(), "and that?", history, "old 9")
+    sent = body["messages"][-1]["content"]
+    assert "old 4" in sent  # the sixth from the end is the oldest kept
+    assert "old 3" not in sent
+
+
 def test_fake_provider_still_satisfies_the_protocol() -> None:
     assert isinstance(FakeProvider(), LLMProvider)

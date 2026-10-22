@@ -34,7 +34,15 @@ DEFAULT_LLM_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 #: How many chunks are named in the system prompt. The agent loop retrieves
 #: at most RETRIEVAL_LIMIT chunks per turn; showing all of them is the point
 #: of invariant I2, so no additional cap is applied here.
-MAX_RESPONSE_TOKENS = 1024
+#: Raised from 1024 with the plain-prose answer style: a natural explanation
+#: of several passages ran into the old budget and was cut off mid-sentence
+#: (``finish_reason=length``), which reads as a broken answer, not a shorter one.
+MAX_RESPONSE_TOKENS = 2048
+
+#: How many messages of the conversation the follow-up rewriter is shown.
+#: Enough to resolve "it" or "the other one"; short enough that a long
+#: conversation does not turn one search query into a large prompt.
+REWRITE_HISTORY_MESSAGES = 6
 
 #: The default model reasons before it writes. With ten retrieved chunks it
 #: spent all 1024 tokens on ``reasoning_content`` and returned an empty
@@ -62,6 +70,14 @@ Choose one action:
   {"action": "answer", "text": "<the answer>", "citations": [<chunk numbers>]}
   Every sentence of borrowed fact must trace to a chunk number you cite.\
  Cite only numbers from the list above.
+  Write it the way a knowledgeable colleague would say it out loud: plain \
+sentences, no preamble, no restating of the question, no headings. Put the \
+chunk number in square brackets immediately after the fact it supports, for \
+example "Maximum junction temperature is 94 C [1]." Cite a chunk once per \
+claim; a wall of bracketed numbers is not evidence a reader can follow.
+  When the user asks you to explain, simplify or rephrase what you just said, \
+say the same fact freshly and more plainly from the extracts shown this turn. \
+Do not repeat your previous wording.
 - clarification: the question is ambiguous and one short question would fix \
 it. Reply {"action": "clarification", "question": "<one question>"}. Do not \
 clarify when you can answer.
@@ -72,6 +88,18 @@ clarify when you can answer.
 
 Never invent facts, documents, or chunk numbers.
 """
+
+REWRITE_SYSTEM_PROMPT = """You turn one follow-up message into a standalone \
+search query.
+
+- Resolve what the message points at from the conversation: pronouns, "the \
+other one", "that again".
+- If the message asks for a different style, length or level of detail \
+("explain simply", "shorten it", "say that again"), the query is the subject \
+of the previous answer. Drop the instruction about how to answer.
+- Keep the words a document would contain.
+- If the message names its own topic and stands alone, return it unchanged.
+- Reply with the query alone: one line, no quotes, no preamble, no answer."""
 
 
 class NvidiaLLMError(Exception):
@@ -172,6 +200,35 @@ class NvidiaLLMProvider:
         parsed = _parse_json_object(content)
         return _action_from_json(parsed)
 
+    def rewrite_follow_up(
+        self, *, question: str, history: list[dict[str, str]]
+    ) -> str:
+        """Rewrite a follow-up into a query retrieval can use.
+
+        The agent loop decides *whether* to call this; this method only
+        performs the rewrite. On any failure it raises, and the loop falls
+        back to the literal question -- a lost rewrite must never lose the
+        question. The result is collapsed to one line because retrieval takes
+        a query, not a paragraph.
+        """
+        transcript = "\n".join(
+            f"{message['role'].capitalize()}: {message['content']}"
+            for message in history[-REWRITE_HISTORY_MESSAGES:]
+        )
+        content = self._complete(
+            [
+                {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Conversation so far:\n{transcript}\n\n"
+                        f"Follow-up: {question}"
+                    ),
+                },
+            ]
+        )
+        return _single_line(content)
+
     def _chunks_section(self, chunks: list[Chunk]) -> str:
         """The numbered chunk listing, or an explicit empty set.
 
@@ -247,6 +304,15 @@ class NvidiaLLMProvider:
             detail += ")"
             raise NvidiaLLMError(f"NVIDIA returned an empty completion{detail}.")
         return content
+
+
+def _single_line(text: str) -> str:
+    """Collapse a completion to one whitespace-normalised line.
+
+    Models like to answer with a quoted query on its own line and an
+    explanation below it; searching the explanation is not what was asked.
+    """
+    return " ".join(text.strip().strip('"').split())
 
 
 def _parse_json_object(text: str) -> dict:

@@ -17,7 +17,7 @@ function TraceStepBlock({ step, index }: { step: TraceStep; index: number }) {
         <p className="text-[13px] text-fg">
           <span className="mr-1.5 font-mono text-[11.5px] text-faint">
             Step {index}
-          </span>
+          </span>{" "}
           {ACTION_LABEL[step.action]}
         </p>
         <p className="font-mono text-[11px] text-faint tabular">
@@ -25,9 +25,33 @@ function TraceStepBlock({ step, index }: { step: TraceStep; index: number }) {
         </p>
       </div>
 
-      <p className="mt-1 break-words font-mono text-[11.5px] leading-snug text-muted">
-        searched “{step.query}”
-      </p>
+      {step.original_query && step.original_query !== step.query ? (
+        <>
+          <p className="mt-1 break-words font-mono text-[11.5px] leading-snug text-muted">
+            follow-up “{step.original_query}”
+          </p>
+          <p className="break-words font-mono text-[11.5px] leading-snug text-muted">
+            rewritten “{step.query}”
+          </p>
+        </>
+      ) : (
+        <p className="mt-1 break-words font-mono text-[11.5px] leading-snug text-muted">
+          searched “{step.query}”
+        </p>
+      )}
+      {step.rewrite_failed && (
+        <p className="mt-0.5 font-mono text-[10.5px] text-faint">
+          the follow-up could not be rewritten; it was searched as written
+        </p>
+      )}
+      {step.rewrite_attempted &&
+        !step.original_query &&
+        !step.rewrite_failed && (
+          <p className="mt-0.5 font-mono text-[10.5px] text-faint">
+            the rewrite returned the message unchanged; it was searched as
+            written
+          </p>
+        )}
       <p className="mt-0.5 font-mono text-[11px] text-faint tabular">
         {step.results} {step.results === 1 ? "chunk" : "chunks"}, retrieve{" "}
         {formatMs(step.retrieve_ms)}, decide {formatMs(step.decide_ms)}

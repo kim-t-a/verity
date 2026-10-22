@@ -1,4 +1,5 @@
 import {
+  excerpt,
   hasNumeralMapping,
   numeralOf,
   orderedCitations,
@@ -22,6 +23,11 @@ function EvidenceList({
         const numeral = numeralOf(citation);
         const isSelected = numeral !== null && numeral === selected;
         const label = numeral ?? index + 1;
+        const quote = citation.text ? excerpt(citation.text) : null;
+        const full = citation.text
+          ? citation.text.replace(/\s+/g, " ").trim()
+          : null;
+        const hasMore = quote !== null && full !== null && quote !== full;
 
         return (
           <li key={`${citation.chunk_id}-${citation.location}-${index}`}>
@@ -49,12 +55,18 @@ function EvidenceList({
                   <span className="mt-0.5 block break-words font-mono text-[11.5px] text-faint">
                     {citation.location}
                   </span>
-                  {citation.text && (
-                    <span className="evidence-quote block">{citation.text}</span>
+                  {quote && (
+                    <span className="evidence-quote block">{quote}</span>
                   )}
                 </span>
               </span>
             </button>
+            {hasMore && (
+              <details className="evidence-full">
+                <summary>Full passage</summary>
+                <p>{citation.text}</p>
+              </details>
+            )}
           </li>
         );
       })}

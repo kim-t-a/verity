@@ -142,7 +142,10 @@ async def ask_question(session_id: int, request: AskRequest) -> MessageResponse:
 
     retriever = _build_retriever()
     provider = default_llm_provider()
-    loop = AgentLoop(retriever, provider)
+    # The same model decides answers and rewrites follow-ups. The loop calls
+    # the rewriter only when a message looks like a follow-up; a first
+    # question skips the extra call entirely (spec §9).
+    loop = AgentLoop(retriever, provider, rewriter=provider)
 
     # Get conversation history for context. The newest ten turns, oldest
     # first: ordering by created_at alone is not enough because the user and

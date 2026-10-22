@@ -27,6 +27,7 @@ from verity.engine.retrieval.keyword import KeywordRetriever
 from verity.engine.retrieval.vector import VectorRetriever
 from verity.engine.retrieval import RetrievedChunk
 from verity.llm.provider import LLMAction, LLMProvider
+from verity.agent.rewrite import FollowUpRewriter, looks_like_follow_up
 
 
 #: Maximum number of tool-calling iterations before the model must answer
@@ -79,10 +80,14 @@ class AgentLoop:
         provider: LLMProvider,
         *,
         max_iterations: int = MAX_ITERATIONS,
+        rewriter: FollowUpRewriter | None = None,
     ) -> None:
         self._retriever = retriever
         self._provider = provider
         self._max_iterations = max_iterations
+        #: Optional. Without it, every message is searched as written, which
+        #: is correct for one-shot questions and useless for follow-ups.
+        self._rewriter = rewriter
 
     def run(
         self,
@@ -112,11 +117,33 @@ class AgentLoop:
             messages.extend(session_history)
         messages.append({"role": "user", "content": question})
 
+        # A follow-up is rewritten into a standalone query before anything is
+        # searched. This changes the query, not what the model is told the
+        # user said: the model still sees the real message, so it cannot
+        # answer a question the user did not ask.
+        search_query = question
+        original_query: str | None = None
+        rewrite_failed = False
+        rewrite_attempted = False
+        if self._rewriter is not None and looks_like_follow_up(question, history):
+            rewrite_attempted = True
+            try:
+                rewritten = self._rewriter.rewrite_follow_up(
+                    question=question, history=history
+                ).strip()
+            except Exception:  # noqa: BLE001 - a rewrite is an improvement, not a step
+                # Falling back to the literal question is degraded, not broken,
+                # and the trace says which happened.
+                rewrite_failed = True
+            else:
+                if rewritten and rewritten != question:
+                    original_query = question
+                    search_query = rewritten
+
         for iteration in range(self._max_iterations):
             iterations = iteration + 1
 
-            # Retrieve chunks for the current question.
-            search_query = question
+            # Retrieve chunks for the query this iteration is working on.
             retrieve_started = perf_counter()
             chunks = self._retrieve(search_query)
             retrieve_ms = _elapsed_ms(retrieve_started)
@@ -139,6 +166,12 @@ class AgentLoop:
                 "decide_ms": _elapsed_ms(decide_started),
                 "top": [_trace_chunk(c) for c in chunks[:10]],
             }
+            if iteration == 0 and original_query is not None:
+                step["original_query"] = original_query
+            if iteration == 0 and rewrite_attempted:
+                step["rewrite_attempted"] = True
+            if iteration == 0 and rewrite_failed:
+                step["rewrite_failed"] = True
             steps.append(step)
 
             action_type: ActionType = action.type  # type: ignore[assignment]
@@ -156,6 +189,7 @@ class AgentLoop:
                         }
                     )
                     question = action.query
+                    search_query = action.query
                 continue
 
             if action_type == "clarification":
@@ -172,16 +206,12 @@ class AgentLoop:
                 return AgentDecision(
                     kind="refusal",
                     text=action.reason or "I couldn't find enough evidence to answer.",
-                    citations=[
-                        {
-                            "chunk_id": i,
-                            "ordinal": i,
-                            "rel_path": c.chunk.rel_path,
-                            "location": c.chunk.location,
-                            "text": c.chunk.text,
-                        }
-                        for i, c in enumerate(retrieved_chunks, start=1)
-                    ],
+                    # Retrieved is not cited. These chunks were searched and
+                    # rejected; listing them as citations made the page show
+                    # "10 sources" for an answer that says there are none.
+                    # What was searched travels in ``retrieved_chunks``, which
+                    # the API reports separately as ``searched``.
+                    citations=[],
                     retrieved_chunks=retrieved_chunks,
                     iterations=iterations,
                     trace=self._trace(steps, started),

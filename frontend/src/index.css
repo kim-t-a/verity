@@ -234,6 +234,29 @@
     pointer-events: none;
   }
 
+  /* The rest of a chunk that the excerpt cut off. Indented to the text column
+     so it reads as part of the evidence row, not a new one. */
+  .evidence-full {
+    margin: -2px 0 10px 26px;
+  }
+
+  .evidence-full summary {
+    cursor: pointer;
+    padding: 3px 0;
+    font-size: 11.5px;
+    color: var(--fg-muted);
+  }
+
+  .evidence-full p {
+    margin-top: 4px;
+    font-family: var(--font-display);
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
   .status-square {
     width: 7px;
     height: 7px;
