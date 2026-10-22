@@ -9,9 +9,19 @@ success, so the encryption check is asserted from several directions.
 
 from __future__ import annotations
 
+import pytest
+from conftest import CORPUS_DIR
 from document_fixtures import pdf_bytes
 from verity.engine.ingestion.readers import pdf, read_file
 from verity.engine.models import ReadStatus
+
+# The real sample corpus lives in legacy/, which is reference material and is
+# not published. Without it these tests have nothing to read, so they skip
+# rather than turn a fresh clone red.
+requires_real_corpus = pytest.mark.skipif(
+    not CORPUS_DIR.is_dir(),
+    reason="sample corpus not present (legacy/ is not published)",
+)
 
 
 class TestEncryption:
@@ -45,9 +55,9 @@ class TestEncryption:
 
         assert "not be decrypted" in read_file(files["secret.pdf"]).detail
 
+    @requires_real_corpus
     def test_the_real_encrypted_corpus_file_is_refused(self) -> None:
         """The actual AES-256 file from the sample corpus."""
-        from conftest import CORPUS_DIR
         from verity.engine.ingestion import walker
 
         discovered = next(
@@ -127,11 +137,11 @@ class TestExtraction:
         assert result.status is ReadStatus.EMPTY
 
 
+@requires_real_corpus
 class TestRealCorpusPdfs:
     """The two readable datasheets, which carry the supersession trap."""
 
     def _read(self, rel_path: str):
-        from conftest import CORPUS_DIR
         from verity.engine.ingestion import walker
 
         discovered = next(

@@ -39,6 +39,16 @@ models/
 *.onnx
 *.pt
 
+# ---- Local reference material ----
+# The AMD challenge material under legacy/ and the starter model weights are
+# kept on disk for reference, not published. The engine was ported from
+# legacy/, so the files stay available locally, but they must not enter git.
+# `.superpowers/` is agent scratch space and is already self-ignored; the rule
+# here keeps it out even if that inner file is deleted.
+legacy/
+starter/
+.superpowers/
+
 # ---- Editor / OS ----
 .DS_Store
 Thumbs.db

@@ -125,6 +125,10 @@ def test_walking_twice_gives_the_same_answer(hazard_corpus: HazardCorpus) -> Non
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not CORPUS_DIR.is_dir(),
+    reason="sample corpus not present (legacy/ is reference material and is not published)",
+)
 class TestRealSampleCorpus:
     """These run against the corpus shipped with the kit, never modified."""
 

@@ -26,6 +26,14 @@ from verity.engine.models import ReadStatus
 
 SAMPLE_QUESTIONS = REPO_ROOT / "legacy" / "sample-questions.json"
 
+# `legacy/` is reference material and is not published, so a fresh clone has no
+# corpus to read. Skip rather than fail: the tests that matter are the ones that
+# run when the corpus is present, not a red suite on every clone.
+pytestmark = pytest.mark.skipif(
+    not CORPUS_DIR.is_dir() or not SAMPLE_QUESTIONS.is_file(),
+    reason="sample corpus not present (legacy/ is not published)",
+)
+
 
 def normalise(value: str) -> str:
     """The contract's single normalisation, applied to test comparisons.
