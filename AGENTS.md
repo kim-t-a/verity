@@ -137,6 +137,16 @@ config; run pytest from `backend/`.
   `source ~/venvs/mc3/bin/activate`.
 - There is no GPU in the evaluation path any more. Everything model-shaped is a
   hosted API call.
+- **`docker compose config` expands `env_file: .env` and prints the provider
+  key in plaintext** — verified 2026-10-22, when it leaked one into an agent
+  transcript. Never run it in this repository, and never paste its output.
+  `docker compose config --services` lists names without expanding values.
+- **The host dev servers and the container stack fight for the same ports.**
+  A host `uvicorn ... --port 8000` or `vite --port 5173` makes Docker's publish
+  of those ports fail silently: the containers stay healthy, but
+  `docker ps` shows only `8000/tcp`, the browser is served by the host process
+  and `docker compose logs` stays empty. Stop the host processes, then
+  `docker compose up -d --force-recreate backend frontend`.
 
 ## Conventions
 
