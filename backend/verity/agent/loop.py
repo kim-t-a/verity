@@ -27,14 +27,27 @@ from verity.engine.retrieval.keyword import KeywordRetriever
 from verity.engine.retrieval.vector import VectorRetriever
 from verity.engine.retrieval import RetrievedChunk
 from verity.llm.provider import LLMAction, LLMProvider
-from verity.agent.rewrite import FollowUpRewriter, looks_like_follow_up
+from verity.agent.rewrite import (
+    FollowUpRewriter,
+    looks_like_follow_up,
+    looks_like_restyle,
+)
 
 
 #: Maximum number of tool-calling iterations before the model must answer
 #: or refuse. Spec invariant I3: clarifying is never a way to avoid answering.
 MAX_ITERATIONS = 5
 
-ActionType = Literal["search", "answer", "clarification", "refusal"]
+#: Appended to the conversation when the user asks for the same answer in
+#: plainer words. Without it the model re-extracts the same sentence from the
+#: same chunk and calls that an answer -- which is what "explain in simple
+#: manner" used to produce.
+RESTYLE_NOTE = (
+    "The user is asking you to restate your previous answer more simply, not "
+    "to answer a new question. Say the same supported fact in plainly "
+    "different words: shorter sentences, everyday terms, no repeated "
+    "sentence. Add nothing the extracts do not support."
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +128,12 @@ class AgentLoop:
         messages: list[dict[str, str]] = []
         if session_history:
             messages.extend(session_history)
+            # A restyle is the one follow-up where the same evidence yields a
+            # different answer: the fact stays, the wording must change. The
+            # instruction is a system note, not a rewritten user message, so
+            # the model still sees exactly what the user typed.
+            if looks_like_restyle(question):
+                messages.append({"role": "system", "content": RESTYLE_NOTE})
         messages.append({"role": "user", "content": question})
 
         # A follow-up is rewritten into a standalone query before anything is

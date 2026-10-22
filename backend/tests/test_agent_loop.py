@@ -13,7 +13,12 @@ import pytest
 from verity.engine.models import Chunk, MediaType
 from verity.engine.retrieval import RetrievedChunk
 from verity.llm.provider import FakeProvider, LLMAction
-from verity.agent.loop import AgentLoop, MAX_ITERATIONS, make_retriever_from_index
+from verity.agent.loop import (
+    AgentLoop,
+    MAX_ITERATIONS,
+    RESTYLE_NOTE,
+    make_retriever_from_index,
+)
 
 
 def chunk(text: str, rel_path: str = "specs/datasheet.pdf") -> Chunk:
@@ -352,3 +357,52 @@ def test_an_unchanged_rewrite_is_reported_as_attempted() -> None:
     assert step["rewrite_attempted"] is True
     assert "original_query" not in step
     assert retriever.queries == ["explain in simple manner"]
+
+
+def test_a_restyle_follow_up_tells_the_model_to_rephrase() -> None:
+    """Without the note the model re-extracts the same sentence.
+
+    "Explain in simple manner" retrieves the same chunk as the previous turn;
+    left alone, the model reads the same sentence out again. The note is what
+    makes the same evidence produce a different wording.
+    """
+    retriever = RecordingRetriever(["maximum junction temperature is 94 C"])
+    provider = FakeProvider(
+        actions=[LLMAction("answer", text="It tops out at 94 C [1].", chunk_ids=[1])]
+    )
+    loop = AgentLoop(retriever, provider)
+
+    decision = loop.run("explain in simple manner", session_history=HISTORY)
+
+    assert decision.kind == "answer"
+    messages = provider.calls[0]["messages"]
+    assert {"role": "system", "content": RESTYLE_NOTE} in messages
+    # The user's own words are still the last thing the model reads.
+    assert messages[-1] == {"role": "user", "content": "explain in simple manner"}
+
+
+def test_an_ordinary_follow_up_gets_no_restyle_note() -> None:
+    retriever = RecordingRetriever(["maximum junction temperature is 94 C"])
+    provider = FakeProvider(
+        actions=[LLMAction("answer", text="94 C [1].", chunk_ids=[1])]
+    )
+    loop = AgentLoop(retriever, provider)
+
+    loop.run("and what about it in celsius?", session_history=HISTORY)
+
+    messages = provider.calls[0]["messages"]
+    assert {"role": "system", "content": RESTYLE_NOTE} not in messages
+
+
+def test_a_restyle_with_no_history_gets_no_note() -> None:
+    """There is no previous answer to restate, so the note would be false."""
+    retriever = RecordingRetriever(["94 C"])
+    provider = FakeProvider(
+        actions=[LLMAction("answer", text="94 C [1].", chunk_ids=[1])]
+    )
+    loop = AgentLoop(retriever, provider)
+
+    loop.run("explain in simple manner")
+
+    messages = provider.calls[0]["messages"]
+    assert {"role": "system", "content": RESTYLE_NOTE} not in messages

@@ -48,6 +48,36 @@ _REFERENCE_WORDS = frozenset(
 
 _WORD = re.compile(r"[a-z0-9']+")
 
+#: Stems of requests that ask for the *same* answer in different words.
+#: Deliberately narrow: "summarise the contract" is a new task, not a
+#: restatement, so summar* is not here.
+_RESTYLE_STEMS = ("simpl", "rephras", "shorten", "eli5")
+
+#: Whole phrases that mean "say the last answer differently".
+_RESTYLE_PHRASES = (
+    "in other words",
+    "say that again",
+    "plain english",
+    "plain words",
+    "break that down",
+    "explain like",
+)
+
+
+def looks_like_restyle(question: str) -> bool:
+    """Whether the message asks for the previous answer, worded differently.
+
+    The distinction matters because a restyle is the one follow-up where the
+    model must *not* just re-extract the same sentence: the evidence is the
+    same, and the work is the wording.
+    """
+    text = question.lower()
+    if any(phrase in text for phrase in _RESTYLE_PHRASES):
+        return True
+    return any(
+        word.startswith(_RESTYLE_STEMS) for word in _WORD.findall(text)
+    )
+
 
 class FollowUpRewriter(Protocol):
     """Turns a follow-up into a query that can stand on its own.
