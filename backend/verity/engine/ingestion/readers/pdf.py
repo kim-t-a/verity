@@ -85,10 +85,6 @@ _BFRANGE_ENTRY = re.compile(rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-
 _MAX_CODE_POINT = 0x10FFFF
 
 
-class EncryptedPdf(Exception):
-    """The PDF is password-protected. Raised so the caller must decide, not ignore."""
-
-
 def is_encrypted(data: bytes) -> bool:
     """Whether the document declares an ``/Encrypt`` dictionary.
 

@@ -88,14 +88,6 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
         pool.putconn(conn, close=bool(conn.closed))
 
 
-def close_pool() -> None:
-    """Close all pooled connections. Mostly for tests and shutdown."""
-    global _connection_pool
-    if _connection_pool is not None:
-        _connection_pool.closeall()
-        _connection_pool = None
-
-
 def ensure_vector_extension() -> None:
     """Ensure the pgvector extension is installed in the database."""
     with get_connection() as conn:

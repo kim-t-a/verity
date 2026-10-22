@@ -330,14 +330,3 @@ def ingest_corpus(
         skipped=skipped,
     )
 
-
-def ingest_sequences(
-    corpus_root: Path | str,
-    workspace_id: int = 1,
-    provider: EmbeddingProvider | None = None,
-) -> list[IngestedDocument]:
-    """Convenience wrapper returning just the per-document outcomes.
-
-    Useful when the caller does not need the skipped-file ledger.
-    """
-    return ingest_corpus(corpus_root, workspace_id, provider).documents

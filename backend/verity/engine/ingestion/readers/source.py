@@ -20,14 +20,6 @@ from verity.engine.config import (
 )
 
 
-class SourceTooLarge(Exception):
-    """Raised when a file exceeds the configured size cap.
-
-    A dedicated exception rather than a generic ``OSError`` so the caller can
-    report the real reason instead of a misleading "unreadable".
-    """
-
-
 class NotTextError(Exception):
     """Raised when bytes decode but are plainly not text.
 

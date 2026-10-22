@@ -109,9 +109,6 @@ class DiscoveryResult:
     def total_skipped(self) -> int:
         return len(self.skipped)
 
-    def files_of_type(self, media_type: MediaType) -> list[DiscoveredFile]:
-        return [f for f in self.files if f.media_type is media_type]
-
     def counts_by_type(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for discovered in self.files:
