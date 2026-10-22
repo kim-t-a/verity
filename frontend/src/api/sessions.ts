@@ -23,4 +23,8 @@ export const sessionsApi = {
   list(workspaceId = 1, limit = 50): Promise<SessionListResponse> {
     return api(`/api/sessions?workspace_id=${workspaceId}&limit=${limit}`);
   },
+
+  remove(sessionId: number): Promise<void> {
+    return api(`/api/sessions/${sessionId}`, { method: "DELETE" });
+  },
 };

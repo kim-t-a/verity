@@ -7,6 +7,7 @@ import { ConversationList } from "@/components/conversation/ConversationList";
 import { EvidencePanel } from "@/components/conversation/EvidencePanel";
 import { TracePanel } from "@/components/conversation/TracePanel";
 import { TurnView } from "@/components/conversation/TurnView";
+import { sessionsApi } from "@/api/sessions";
 import { useConversation } from "@/hooks/useConversation";
 import { useSessions } from "@/hooks/useSessions";
 import type { Turn } from "@/types";
@@ -83,6 +84,16 @@ export function ConversationScreen({ workspaceId = 1 }: { workspaceId?: number }
     void openSession(id);
   }
 
+  async function handleDeleteSession(id: number) {
+    await sessionsApi.remove(id);
+    await chats.refetch();
+    if (id === sessionId) {
+      // The chat on screen was the one deleted. Clear it rather than leave a
+      // transcript pointing at a session that no longer exists.
+      handleReset();
+    }
+  }
+
   function select(turnKey: string, numeral: number) {
     setPinnedKey(turnKey);
     setSelection((previous) =>
@@ -109,6 +120,7 @@ export function ConversationScreen({ workspaceId = 1 }: { workspaceId?: number }
           onSelect={handleSelectSession}
           onNew={handleReset}
           onRetry={() => void chats.refetch()}
+          onDelete={handleDeleteSession}
         />
       </aside>
 
@@ -134,6 +146,7 @@ export function ConversationScreen({ workspaceId = 1 }: { workspaceId?: number }
               onSelect={handleSelectSession}
               onNew={handleReset}
               onRetry={() => void chats.refetch()}
+              onDelete={handleDeleteSession}
               onClose={() => setChatsOpen(false)}
             />
           </div>

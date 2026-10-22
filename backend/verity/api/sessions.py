@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from verity.db import get_connection
@@ -299,6 +299,26 @@ async def ask_question(session_id: int, request: AskRequest) -> MessageResponse:
         iterations=decision.iterations,
         trace=decision.trace,
     )
+
+
+@router.delete("/{session_id}", status_code=204, tags=["sessions"])
+async def delete_session(session_id: int) -> Response:
+    """Delete one conversation and everything said in it.
+
+    Messages and their citations go with it through ``ON DELETE CASCADE``.
+    Documents and chunks do not: a chat is a record of questions, not of the
+    corpus, and deleting a conversation must not remove evidence another
+    conversation still cites.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM sessions WHERE id = %s RETURNING id", (session_id,)
+            )
+            if cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Session not found")
+        conn.commit()
+    return Response(status_code=204)
 
 
 @router.get("/{session_id}/messages", tags=["sessions"])

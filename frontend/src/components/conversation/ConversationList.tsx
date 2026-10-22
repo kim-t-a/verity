@@ -1,4 +1,5 @@
-import { Plus, X } from "lucide-react";
+import { useState } from "react";
+import { Plus, Trash2, X } from "lucide-react";
 
 import { formatTimestamp } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -12,6 +13,8 @@ interface ConversationListProps {
   onSelect: (sessionId: number) => void;
   onNew: () => void;
   onRetry: () => void;
+  /** Resolves when the chat is gone; rejects when it could not be deleted. */
+  onDelete: (sessionId: number) => Promise<void>;
   /** Present only in the narrow-screen drawer, which needs a close control. */
   onClose?: () => void;
 }
@@ -22,6 +25,9 @@ interface ConversationListProps {
  * Titles are the first question the person asked. Nothing here is generated:
  * a chat list that renamed a conversation would be the product's own summary
  * of it, and this product does not summarise without being asked.
+ *
+ * Deleting asks once, in place. A chat can be a month of questions, so the
+ * trash icon never acts on the first click.
  */
 export function ConversationList({
   sessions,
@@ -31,8 +37,26 @@ export function ConversationList({
   onSelect,
   onNew,
   onRetry,
+  onDelete,
   onClose,
 }: ConversationListProps) {
+  const [confirming, setConfirming] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function confirmDelete(sessionId: number) {
+    setDeleting(sessionId);
+    setDeleteError(null);
+    try {
+      await onDelete(sessionId);
+      setConfirming(null);
+    } catch {
+      setDeleteError("Could not delete this chat.");
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-none items-center justify-between gap-2 px-3 py-3">
@@ -86,31 +110,76 @@ export function ConversationList({
           <ul className="space-y-0.5">
             {sessions.map((session) => {
               const active = session.session_id === activeSessionId;
+              const askingToDelete = confirming === session.session_id;
               return (
                 <li key={session.session_id}>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(session.session_id)}
-                    aria-current={active ? "true" : undefined}
-                    className={cn(
-                      "block w-full rounded-[4px] px-2.5 py-2 text-left transition-colors duration-quick",
-                      active
-                        ? "bg-accent-wash"
-                        : "hover:bg-surface-2"
-                    )}
-                  >
-                    <span
+                  <div className="group relative">
+                    <button
+                      type="button"
+                      onClick={() => onSelect(session.session_id)}
+                      aria-current={active ? "true" : undefined}
                       className={cn(
-                        "line-clamp-2 block text-[13px] leading-snug",
-                        active ? "text-fg" : "text-muted"
+                        "block w-full rounded-[4px] py-2 pl-2.5 pr-9 text-left transition-colors duration-quick",
+                        active ? "bg-accent-wash" : "hover:bg-surface-2"
                       )}
                     >
-                      {session.title}
-                    </span>
-                    <span className="mt-0.5 block font-mono text-[10.5px] text-faint tabular">
-                      {formatTimestamp(session.last_message_at)}
-                    </span>
-                  </button>
+                      <span
+                        className={cn(
+                          "line-clamp-2 block text-[13px] leading-snug",
+                          active ? "text-fg" : "text-muted"
+                        )}
+                      >
+                        {session.title}
+                      </span>
+                      <span className="mt-0.5 block font-mono text-[10.5px] text-faint tabular">
+                        {formatTimestamp(session.last_message_at)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfirming(askingToDelete ? null : session.session_id)
+                      }
+                      aria-label={`Delete chat: ${session.title}`}
+                      title="Delete chat"
+                      className="absolute right-1 top-1.5 flex h-6 w-6 items-center justify-center rounded-[3px] text-faint opacity-60 transition-[opacity,color,background-color] duration-quick hover:bg-surface hover:text-stop hover:opacity-100 group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+
+                  {askingToDelete && (
+                    <div className="mt-1 rounded-[4px] border border-rule bg-surface px-2 py-1.5">
+                      <p className="text-[11.5px] leading-snug text-muted">
+                        Delete this chat? The questions and answers go with it.
+                      </p>
+                      <div className="mt-1 flex items-center justify-end gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setConfirming(null)}
+                          disabled={deleting === session.session_id}
+                          className="text-[11.5px] text-muted hover:text-fg disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void confirmDelete(session.session_id)}
+                          disabled={deleting === session.session_id}
+                          className="text-[11.5px] font-medium text-stop hover:brightness-90 disabled:opacity-50"
+                        >
+                          {deleting === session.session_id
+                            ? "Deleting…"
+                            : "Delete"}
+                        </button>
+                      </div>
+                      {deleteError && (
+                        <p className="mt-1 text-[11px] text-stop" role="alert">
+                          {deleteError}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </li>
               );
             })}

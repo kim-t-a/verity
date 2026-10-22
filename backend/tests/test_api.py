@@ -327,6 +327,47 @@ class TestSessions:
         assert data["session_id"] == session_id
         assert data["messages"] == []
 
+    def test_delete_session_removes_its_messages(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        session_id = client.post(
+            "/api/sessions", json={"workspace_id": 1}
+        ).json()["session_id"]
+        _insert_message(db_conn, session_id, "user", "delete me")
+        _insert_message(db_conn, session_id, "assistant", "and me")
+
+        response = client.delete(f"/api/sessions/{session_id}")
+
+        assert response.status_code == 204
+        assert response.content == b""
+        # Reopening is a 404: the row is gone, not merely hidden from the list.
+        assert client.get(f"/api/sessions/{session_id}/messages").status_code == 404
+        assert client.get("/api/sessions?workspace_id=1").json()["sessions"] == []
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM messages WHERE session_id = %s", (session_id,)
+            )
+            assert cur.fetchone()[0] == 0
+
+    def test_delete_session_leaves_other_chats(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        keep = client.post("/api/sessions", json={"workspace_id": 1}).json()["session_id"]
+        drop = client.post("/api/sessions", json={"workspace_id": 1}).json()["session_id"]
+        _insert_message(db_conn, keep, "user", "keep me")
+        _insert_message(db_conn, drop, "user", "drop me")
+
+        assert client.delete(f"/api/sessions/{drop}").status_code == 204
+
+        sessions = client.get("/api/sessions?workspace_id=1").json()["sessions"]
+        assert [item["session_id"] for item in sessions] == [keep]
+
+    def test_delete_nonexistent_session_returns_404(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        response = client.delete("/api/sessions/99999")
+        assert response.status_code == 404
+
     def test_model_failure_is_502_not_a_bare_500(
         self,
         client: TestClient,
