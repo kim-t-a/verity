@@ -21,6 +21,12 @@ saying where it came from, and admitting when it is not there.
 - **Hybrid retrieval.** Keyword search (BM25) and vector search (pgvector)
   run together and are fused with Reciprocal Rank Fusion. One catches exact
   part numbers and filenames; the other catches paraphrases.
+- **Follow-ups stay on topic.** A message like "and in celsius?" is rewritten
+  into a standalone search query before retrieval. "Explain in simple
+  manner" or "I don't understand" re-explains the same cited passage in
+  plainer words from the extracts, instead of repeating the previous answer.
+- **Saved conversations.** Every chat is kept, listed by its first question
+  and ordered by latest activity. Reopen one at any time, or delete it.
 - **Bounded agent loop.** The model may answer, ask one clarifying question,
   or refuse — but clarifying is capped. At the cap it produces a best-effort
   answer or refuses only when evidence is genuinely absent.
@@ -47,7 +53,7 @@ that owns it, so you can follow the code from this document.
                               ┌──────────────▼──┐   ┌──────▼──────────┐
                               │ PostgreSQL 16   │   │ NVIDIA API      │
                               │ pgvector        │   │ (backend only;  │
-                              │ tsvector        │   │ key never in    │
+                              │                 │   │ key never in    │
                               └─────────────────┘   │ the browser)    │
                                                     └─────────────────┘
 ```
@@ -102,6 +108,10 @@ POST /api/sessions/1/messages                 api/sessions.py
   ▼
 AgentLoop.run(question)                       agent/loop.py
   │
+  ├─ a follow-up becomes a standalone query    agent/rewrite.py
+  │     (a first question or a self-contained
+  │     question is searched exactly as typed)
+  │
   │   repeat at most 5 times:
   │     ┌──────────────────────────────────────────────────────┐
   │     │ retrieve the top chunks                              │
@@ -122,28 +132,39 @@ save the turn + citations                     api/sessions.py
 {"type": "answer" | "clarification" | "refusal", ...}
 ```
 
-Two details that matter:
+Three details that matter:
 
 - **The model never sees a chunk it cannot cite.** The prompt contains exactly
   the retrieved chunks, numbered. There is no extra context (I2).
-- **Memory is not evidence.** History shapes the follow-up question, but every
-  turn retrieves again; an answer cannot cite a document that was not
+- **Memory is not evidence.** A follow-up is rewritten into a standalone query
+  for retrieval, but the model still receives the user's literal message, and
+  every turn retrieves again. An answer cannot cite a document that was not
   retrieved this turn (I4).
+- **A restyle is explained, not repeated.** When the message asks for plain
+  words, the same topic is retrieved again and the model is told to teach from
+  those extracts — unpack their numbers and terms instead of rewording the
+  last answer. If the model tries to clarify, the turn retries with a direct
+  instruction to explain: nothing is ambiguous here.
 
 ### A question, step by step
 
-1. `api/sessions.py` loads the stored chunks and builds a `HybridRetriever`.
-2. The keyword half ranks chunks by BM25; the vector half ranks them by cosine
+1. Before the first search, if this is a follow-up, `agent/rewrite.py` turns it
+   into a standalone query ("and in celsius?" becomes a complete question). A
+   first question or a self-contained one is searched exactly as typed.
+2. `api/sessions.py` loads the stored chunks and builds a `HybridRetriever`.
+3. The keyword half ranks chunks by BM25; the vector half ranks them by cosine
    similarity to the question's embedding.
-3. `HybridRetriever` fuses the two rankings with Reciprocal Rank Fusion (RRF),
+4. `HybridRetriever` fuses the two rankings with Reciprocal Rank Fusion (RRF),
    so a chunk found by both methods outranks one found by only one.
-4. `AgentLoop` shows the top chunks to the LLM. The LLM answers with chunk
-   numbers, searches again, clarifies, or refuses.
-5. The loop verifies every number against the chunks shown **in that
+5. `AgentLoop` shows the top chunks to the LLM. The LLM answers with chunk
+   numbers, searches again, clarifies, or refuses. If the message asked for an
+   explanation in plain words, a system note tells the model to teach from
+   those chunks instead of restating its previous answer.
+6. The loop verifies every number against the chunks shown **in that
    iteration**. If verification fails, the turn is a refusal, not an answer.
-6. `api/sessions.py` stores the user message, the assistant message, and one
+7. `api/sessions.py` stores the user message, the assistant message, and one
    `citations` row per verified citation.
-7. The frontend renders the answer, the evidence panel, and the trace.
+8. The frontend renders the answer, the evidence panel, and the trace.
 
 ### What lives in the database
 
@@ -152,12 +173,16 @@ Two details that matter:
 | `workspaces` | The single shared workspace. |
 | `documents` | One row per uploaded file: status, hash, size, failure reason. |
 | `document_versions` | The content-hash history for a document. |
-| `chunks` | Text + vector + generated `tsvector`; the retrieval unit. |
-| `sessions` | A conversation. |
+| `chunks` | Text + vector; the retrieval unit. |
+| `sessions` | A conversation, listed by its first question. |
 | `messages` | User and assistant turns, with `kind` (answer/clarify/refuse). |
 | `citations` | Which chunk and document supported which assistant message. |
 | `memories` | Derived context (spec); not populated yet, and never evidence. |
 | `jobs` | Queue table for a future long-running worker; not populated yet. |
+
+Keyword ranking is BM25 computed in Python over the chunks loaded by
+`db/chunk_repository.py`. The schema also carries a generated `tsv` column;
+retrieval does not query it.
 
 ### Why the engine is separate
 
@@ -165,6 +190,16 @@ The `engine/` package is pure Python standard library. PDF, DOCX, and XLSX
 parsing are hand-written against `zipfile` and `xml.etree`, so the engine can
 be imported and tested with nothing installed. Only the product layer
 (`api/`, `worker/`, `db/`, `llm/`) has third-party dependencies.
+
+### Why no retrieval framework
+
+Search and the agent loop are written here rather than assembled from
+LangChain, LangGraph, or LlamaIndex. The design spec requires the mechanism
+to stay visible rather than hidden behind a framework, and the engine must
+keep its zero-dependency rule. The citation check also needs exact knowledge
+of which chunks were shown, in which order, at which rank — and the trace
+panel reports those real numbers. The trade-off is that we maintain the BM25
+scorer, the cosine search, and the fusion logic ourselves.
 
 ### Reading order
 
@@ -183,11 +218,11 @@ If you are learning the system, read in this order:
 |---|---|
 | Backend | Python 3.12, FastAPI, psycopg2, Alembic |
 | Engine | Standard library only (hand-written PDF/DOCX/XLSX parsers) |
-| Storage | PostgreSQL 16, pgvector, `tsvector` full-text search |
+| Storage | PostgreSQL 16, pgvector |
 | Retrieval | BM25 + cosine similarity + Reciprocal Rank Fusion |
 | Models | NVIDIA OpenAI-compatible chat and embedding endpoints |
 | Frontend | React 18, TypeScript, Vite, Tailwind, TanStack Query |
-| Tests | pytest (611 backend tests), `tsc --noEmit` for the frontend |
+| Tests | pytest (647 backend tests), `tsc --noEmit` for the frontend |
 
 ---
 
@@ -325,18 +360,25 @@ npm run build
 1. **Upload documents.** Open the Documents screen and upload files, or POST
    them to the API. Ingestion runs in the background; the status moves from
    `pending` to `processing` to `ready` (or `failed` with a reason).
-2. **Ask a question.** Open Chat and type it in plain language.
-3. **Read the evidence.** Every answer cites the file and location it came
+2. **Ask a question.** Open Conversation and type it in plain language.
+3. **Follow up naturally.** "And in celsius?" or "what about the TQ40-B?" is
+   rewritten into a standalone search query. "Explain in simple manner" or
+   "I don't understand" re-explains the cited passage in plainer words taken
+   from the extracts, rather than repeating the previous answer.
+4. **Find your past chats.** The list beside the conversation shows previous
+   chats by their first question, newest first. Open one to continue it, or
+   delete it — the questions and answers go with it, the documents stay.
+5. **Read the evidence.** Every answer cites the file and location it came
    from. The evidence panel shows the retrieved chunks; the trace panel shows
    what was searched and how the rankings were fused.
-4. **Accept a refusal.** If the documents do not contain the answer, Verity
+6. **Accept a refusal.** If the documents do not contain the answer, Verity
    says so instead of guessing.
 
 ### Example with curl
 
 ```bash
 # Upload a document (workspace 1 is the default shared workspace)
-curl -F "file=@legacy/mc3-corpus/specs/tq40_datasheet_r2.pdf" \
+curl -F "file=@/path/to/document.pdf" \
   http://127.0.0.1:8000/api/workspaces/1/documents
 
 # Poll until status is "ready"
@@ -349,16 +391,19 @@ curl -X POST http://127.0.0.1:8000/api/sessions \
 # Ask a question (use the session_id returned above)
 curl -X POST http://127.0.0.1:8000/api/sessions/1/messages \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is the maximum junction temperature of the TQ40?"}'
+  -d '{"question": "What is the maximum operating temperature?"}'
 ```
 
 The answer response is a discriminated union:
 
 ```json
-{"type": "answer",        "text": "...", "citations": [...]}
-{"type": "clarification", "text": "...", "options": [...]}
-{"type": "refusal",       "text": "..."}
+{"type": "answer",        "text": "...", "citations": [...], "searched": [...], "iterations": 1}
+{"type": "clarification", "text": "...", "citations": [],    "searched": [...]}
+{"type": "refusal",       "text": "...", "citations": []}
 ```
+
+`citations` lists only chunks that were shown to the model and verified against
+what it cited. A refusal always has an empty `citations` list.
 
 ---
 
@@ -372,6 +417,8 @@ The answer response is a discriminated union:
 | `GET` | `/api/workspaces/{id}/documents/{document_id}` | One document |
 | `DELETE` | `/api/workspaces/{id}/documents/{document_id}` | Delete a document and its chunks |
 | `POST` | `/api/sessions` | Start a session |
+| `GET` | `/api/sessions` | List saved chats (`workspace_id`, `limit`; title, message count, last activity) |
+| `DELETE` | `/api/sessions/{id}` | Delete a chat and its messages (`204`) |
 | `POST` | `/api/sessions/{id}/messages` | Ask a question |
 | `GET` | `/api/sessions/{id}/messages` | Read the conversation |
 | `POST` | `/api/ingestion` | Ingest a directory path synchronously |
@@ -434,11 +481,14 @@ Working end to end:
 
 - Ingestion of PDF, DOCX, XLSX, CSV, text, logs, source, and images (OCR when
   an engine is available)
-- PostgreSQL + pgvector storage, with `tsvector` keyword search
+- PostgreSQL + pgvector storage, with BM25 keyword retrieval over the chunks
 - Hybrid retrieval and Reciprocal Rank Fusion
+- Follow-up rewriting before retrieval, and plain-language re-explanation
+  grounded in the retrieved extracts
+- Saved chats: list by first question, reopen with citations, delete
 - Bounded agent loop with citation verification
 - FastAPI routes and a React interface with evidence and trace panels
-- Docker Compose stack, Alembic migrations, 611 passing backend tests
+- Docker Compose stack, Alembic migrations, 647 passing backend tests
 
 Not yet built:
 
@@ -447,6 +497,8 @@ Not yet built:
   runs in a background task)
 - An evaluation harness with labelled questions and metrics (spec Phase 6)
 - A reranker
+- Clickable citations that open the source document (citations name the file
+  and location; opening the file itself is not implemented)
 - Production frontend serving (the Compose frontend runs the Vite dev server)
 
 `legacy/` holds the original challenge material the engine was ported from. It
