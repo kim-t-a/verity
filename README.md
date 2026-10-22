@@ -517,5 +517,5 @@ tests skip when it is absent, so a fresh clone still runs green.
 
 ## License
 
-No license has been chosen yet. Add one before making this repository public
-if you want others to reuse it.
+MIT — see [`LICENSE`](LICENSE). Anyone may use, copy, modify, and distribute
+this software, provided the copyright notice is kept.
