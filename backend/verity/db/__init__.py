@@ -22,12 +22,24 @@ from psycopg2 import pool
 #: 2026-10-21). Docker publishes the port on all interfaces, so the loopback
 #: address is both correct and ~1000x faster.
 #: The API key and other secrets live in .env and are never hardcoded here.
+def _env(name: str, default: str) -> str:
+    """Read an environment value, treating an empty string as unset.
+
+    ``.env.example`` ships every variable with no value, and python-dotenv
+    loads those as empty strings. ``os.environ.get(name, default)`` would then
+    return ``""`` instead of the default -- and ``int("")`` for the port raises
+    before the application can start.
+    """
+    value = os.environ.get(name, "").strip()
+    return value or default
+
+
 DB_CONFIG = {
-    "host": os.environ.get("VERITY_DB_HOST", "127.0.0.1"),
-    "port": int(os.environ.get("VERITY_DB_PORT", "5432")),
-    "dbname": os.environ.get("VERITY_DB_NAME", "verity"),
-    "user": os.environ.get("VERITY_DB_USER", "verity"),
-    "password": os.environ.get("VERITY_DB_PASSWORD", "verity_password"),
+    "host": _env("VERITY_DB_HOST", "127.0.0.1"),
+    "port": int(_env("VERITY_DB_PORT", "5432")),
+    "dbname": _env("VERITY_DB_NAME", "verity"),
+    "user": _env("VERITY_DB_USER", "verity"),
+    "password": _env("VERITY_DB_PASSWORD", "verity_password"),
 }
 
 #: Minimum and maximum connections in the pool.

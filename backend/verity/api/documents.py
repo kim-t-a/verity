@@ -29,8 +29,11 @@ from verity.worker.ingest import _sha256, _insert_document, _insert_document_ver
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/documents")
 
-#: Where uploaded files are stored on disk.
-UPLOAD_DIR = Path(os.environ.get("VERITY_UPLOAD_DIR", "/tmp/verity-uploads"))
+#: Where uploaded files are stored on disk. An empty value in `.env.example`
+#: means "use the default", not "write to the current directory".
+UPLOAD_DIR = Path(
+    os.environ.get("VERITY_UPLOAD_DIR", "").strip() or "/tmp/verity-uploads"
+)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 

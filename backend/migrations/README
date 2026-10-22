@@ -10,7 +10,7 @@ table, so it only ever runs what a database has not seen.
 | File | Job |
 |---|---|
 | `../alembic.ini` | Where migrations live and the database URL. |
-| `env.py` | Opens the connection and drives the migration run. |
+| `env.py` | Opens the connection and drives the migration run. It uses `VERITY_DB_*` when set, otherwise the URL in `alembic.ini`. |
 | `script.py.mako` | Template used when generating a new revision. |
 | `versions/*.py` | The actual schema changes. |
 
@@ -79,12 +79,5 @@ downgrade was never run is a migration that may not come back.
 
 ## First run on a brand-new database
 
-The schema uses pgvector's `vector` type, but no migration creates the
-extension. Enable it once before upgrading:
-
-```bash
-docker compose exec db psql -U verity -d verity -c 'CREATE EXTENSION IF NOT EXISTS vector'
-alembic upgrade head
-```
-
-Without it, `CREATE TABLE chunks` fails with `type "vector" does not exist`.
+No manual step is needed. The initial migration enables the pgvector extension
+(`CREATE EXTENSION IF NOT EXISTS vector`) before creating the `chunks` table.

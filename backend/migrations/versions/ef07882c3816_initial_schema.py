@@ -21,6 +21,12 @@ EMBEDDING_DIMENSION = 2048
 def upgrade() -> None:
     """Create the initial schema."""
 
+    # pgvector supplies the `vector` type used by `chunks` below. It is an
+    # extension rather than a built-in type, so it must exist before the table
+    # is created. IF NOT EXISTS keeps this safe on a database that already had
+    # the extension enabled by hand.
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
     # workspaces: one shared workspace for now (auth deferred).
     op.execute("""
         CREATE TABLE workspaces (

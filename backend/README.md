@@ -44,14 +44,9 @@ git and never reach the frontend.
 
 ### First run on a brand-new database
 
-The schema stores pgvector `vector` columns, so the extension must exist before
-`alembic upgrade head`:
-
-```bash
-docker compose exec db psql -U verity -d verity -c 'CREATE EXTENSION IF NOT EXISTS vector'
-```
-
-This is idempotent; running it again is harmless.
+No manual database setup is needed. The initial migration enables the pgvector
+extension before creating the `chunks` table, and the Docker image runs
+`alembic upgrade head` before starting the server.
 
 ## Run the tests
 

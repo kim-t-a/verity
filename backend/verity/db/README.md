@@ -48,9 +48,7 @@ The schema is created by `migrations/versions/*_initial_schema.py`:
 
 ## pgvector
 
-`ensure_vector_extension()` exists but is **not called at startup**. A brand-new
-database needs the extension before migrations can create a `vector` column:
-
-```bash
-docker compose exec db psql -U verity -d verity -c 'CREATE EXTENSION IF NOT EXISTS vector'
-```
+The initial migration runs `CREATE EXTENSION IF NOT EXISTS vector` before it
+creates the `chunks` table, so a fresh database needs no manual step.
+`ensure_vector_extension()` remains available for callers that need to enable
+the extension independently.
