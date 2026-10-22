@@ -69,14 +69,23 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
     """
     pool = get_connection_pool()
     conn = pool.getconn()
+    # A database restart leaves pooled connections closed. Handing one to a
+    # caller raises "connection already closed" from an unrelated line -- and
+    # the failure then surfaces again on the next request. Discard it and take
+    # a fresh connection instead.
+    if conn.closed:
+        pool.putconn(conn, close=True)
+        conn = pool.getconn()
     try:
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        if not conn.closed:
+            conn.rollback()
         raise
     finally:
-        pool.putconn(conn)
+        # Never return a dead connection to the pool to be handed out again.
+        pool.putconn(conn, close=bool(conn.closed))
 
 
 def close_pool() -> None:

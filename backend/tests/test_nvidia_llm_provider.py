@@ -218,5 +218,50 @@ def test_empty_chunk_list_says_so() -> None:
     assert "none this turn" in section
 
 
+def _capture_request(provider: NvidiaLLMProvider) -> dict:
+    """Run one decision with urlopen patched, returning the request body."""
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(_completion('{"action": "refusal", "reason": "x"}'))
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        provider.decide(
+            messages=[{"role": "user", "content": "q"}], chunks=[], tools=[]
+        )
+    return captured["body"]
+
+
+def test_reasoning_is_disabled_by_default(monkeypatch) -> None:
+    """A reasoning model spends the whole budget thinking and answers nothing.
+
+    The default model did exactly that with a ten-chunk prompt: 1024 tokens of
+    reasoning and an empty ``content``. The switch is what makes it answer.
+    """
+    monkeypatch.delenv("NVIDIA_LLM_DISABLE_THINKING", raising=False)
+    body = _capture_request(_provider())
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_the_thinking_switch_can_be_turned_off() -> None:
+    """A model that does not understand the field must not be sent it."""
+    body = _capture_request(
+        NvidiaLLMProvider(
+            api_key="k",
+            base_url="https://example.com",
+            model_id="m",
+            disable_thinking=False,
+        )
+    )
+    assert "chat_template_kwargs" not in body
+
+
+def test_the_environment_can_turn_the_thinking_switch_off(monkeypatch) -> None:
+    monkeypatch.setenv("NVIDIA_LLM_DISABLE_THINKING", "0")
+    body = _capture_request(_provider())
+    assert "chat_template_kwargs" not in body
+
+
 def test_fake_provider_still_satisfies_the_protocol() -> None:
     assert isinstance(FakeProvider(), LLMProvider)

@@ -36,6 +36,23 @@ DEFAULT_LLM_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 #: of invariant I2, so no additional cap is applied here.
 MAX_RESPONSE_TOKENS = 1024
 
+#: The default model reasons before it writes. With ten retrieved chunks it
+#: spent all 1024 tokens on ``reasoning_content`` and returned an empty
+#: ``content``; 4096 and even 8192 tokens were no better at 1024's speed.
+#: ``chat_template_kwargs`` turns that off. Verified against the real endpoint
+#: on 2026-10-22: a ten-chunk prompt answered with citations in 4.4 s and zero
+#: reasoning tokens. Set ``NVIDIA_LLM_DISABLE_THINKING=0`` if a configured
+#: model rejects the parameter.
+DISABLE_THINKING_DEFAULT = True
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean environment flag; an empty value means ``default``."""
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
 SYSTEM_PROMPT = """You answer questions strictly from the numbered document \
 extracts shown to you. You reply in exactly one JSON object and never in any \
 other format.
@@ -80,6 +97,7 @@ class NvidiaLLMProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 120.0,
+        disable_thinking: bool | None = None,
     ) -> None:
         # `.env.example` ships the name with no value, so an empty string is
         # the normal "unset" state here, not a model called "". Using
@@ -94,6 +112,14 @@ class NvidiaLLMProvider:
             base_url if base_url is not None else os.environ.get("NVIDIA_API_BASE_URL", "")
         ).rstrip("/")
         self._timeout = timeout
+        #: Whether to ask the endpoint to skip the model's reasoning phase.
+        #: Only sent when true: a model that does not understand the parameter
+        #: is left alone rather than sent an unknown field.
+        self._disable_thinking = (
+            disable_thinking
+            if disable_thinking is not None
+            else _env_flag("NVIDIA_LLM_DISABLE_THINKING", DISABLE_THINKING_DEFAULT)
+        )
 
     @property
     def model_id(self) -> str:
@@ -168,18 +194,19 @@ class NvidiaLLMProvider:
 
     def _complete(self, payload_messages: list[dict[str, str]]) -> str:
         """One blocking chat completion; returns the assistant text."""
-        body = json.dumps(
-            {
-                "model": self._model_id,
-                "messages": payload_messages,
-                "temperature": 0,
-                "max_tokens": MAX_RESPONSE_TOKENS,
-            }
-        ).encode("utf-8")
+        body: dict[str, object] = {
+            "model": self._model_id,
+            "messages": payload_messages,
+            "temperature": 0,
+            "max_tokens": MAX_RESPONSE_TOKENS,
+        }
+        if self._disable_thinking:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        encoded = json.dumps(body).encode("utf-8")
 
         request = urllib.request.Request(
             f"{self._base_url}/chat/completions",
-            data=body,
+            data=encoded,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._api_key}",
@@ -206,9 +233,19 @@ class NvidiaLLMProvider:
         choices = payload.get("choices", [])
         if not choices:
             raise NvidiaLLMError("NVIDIA returned no choices; cannot decide.")
-        content = choices[0].get("message", {}).get("content")
+        message = choices[0].get("message", {})
+        content = message.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise NvidiaLLMError("NVIDIA returned an empty completion.")
+            # Name the shape of the failure: an empty answer after the model
+            # spent its budget reasoning is a token-budget problem, not the
+            # same thing as an endpoint that returned nothing at all.
+            finish_reason = choices[0].get("finish_reason")
+            reasoning = message.get("reasoning_content") or ""
+            detail = f" (finish_reason={finish_reason}"
+            if reasoning:
+                detail += f", {len(reasoning)} characters of reasoning"
+            detail += ")"
+            raise NvidiaLLMError(f"NVIDIA returned an empty completion{detail}.")
         return content
 
 

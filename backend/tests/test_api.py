@@ -18,6 +18,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from verity.api.main import app
+import verity.api.sessions as sessions
+from verity.engine.index_types import ChunkIndex, IndexManifest
+from verity.engine.models import Chunk, MediaType
+from verity.llm.nvidia_provider import NvidiaLLMError
 
 
 @pytest.fixture(autouse=True)
@@ -217,6 +221,56 @@ class TestSessions:
         data = response.json()
         assert data["session_id"] == session_id
         assert data["messages"] == []
+
+    def test_model_failure_is_502_not_a_bare_500(
+        self,
+        client: TestClient,
+        db_conn: psycopg2.extensions.connection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An outage upstream is reported as such, not as "no evidence".
+
+        A 500 hides which half failed. A refusal would be worse: it would
+        claim the documents do not contain the answer when the model was never
+        able to read them.
+        """
+        session_id = client.post(
+            "/api/sessions", json={"workspace_id": 1}
+        ).json()["session_id"]
+
+        chunk = Chunk(
+            rel_path="a.txt",
+            media_type=MediaType.TEXT,
+            location="text line 1",
+            ordinal=1,
+            text="the notice period is thirty days",
+        )
+        manifest = IndexManifest(
+            format_version=1,
+            created_utc="",
+            corpus_fingerprint="",
+            chunk_count=1,
+            file_count=1,
+            provider_id=None,
+            dimension=None,
+            status_counts={},
+            skipped_count=0,
+        )
+        index = ChunkIndex(manifest=manifest, chunks=(chunk,), vectors=())
+        monkeypatch.setattr(sessions, "load_all_chunks", lambda *a, **k: index)
+
+        def fail_to_decide(self, *args, **kwargs):
+            raise NvidiaLLMError("the provider returned an empty completion")
+
+        monkeypatch.setattr(sessions.AgentLoop, "run", fail_to_decide)
+
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"question": "What is the notice period?"},
+        )
+
+        assert response.status_code == 502
+        assert "language model could not answer" in response.json()["detail"]
 
 
 class TestIngestion:

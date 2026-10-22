@@ -8,6 +8,7 @@ switches on the ``type`` field.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -15,11 +16,14 @@ from pydantic import BaseModel, Field
 
 from verity.db import get_connection
 from verity.db.chunk_repository import load_all_chunks
-from verity.agent.loop import AgentLoop
+from verity.agent.loop import AgentDecision, AgentLoop
+from verity.llm.nvidia_provider import NvidiaLLMError
 from verity.provider_factory import default_embedding_provider, default_llm_provider
 from verity.engine.retrieval.keyword import KeywordRetriever
 from verity.engine.retrieval.vector import VectorRetriever, VectorUnavailable
 from verity.engine.retrieval.hybrid import HybridRetriever
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions")
 
@@ -51,6 +55,29 @@ def _build_retriever():
         # reason (no vectors, or a provider mismatch) in its message.
         pass
     return HybridRetriever(components)
+
+
+def _run_loop(
+    loop: AgentLoop,
+    question: str,
+    history: list[dict[str, str]],
+    session_id: int,
+) -> AgentDecision:
+    """Run the loop, turning a model failure into an honest 502.
+
+    The loop already turns an *evidence* problem into a refusal, and that is a
+    product answer. A model outage is not evidence: reporting it as a refusal
+    would claim the documents do not contain something we never got to read.
+    It is an upstream failure, so it says so.
+    """
+    try:
+        return loop.run(question, session_history=history)
+    except NvidiaLLMError as exc:
+        logger.exception("Language model failed for session %s", session_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"The language model could not answer: {exc}",
+        ) from exc
 
 
 class StartSession(BaseModel):
@@ -135,7 +162,7 @@ async def ask_question(session_id: int, request: AskRequest) -> MessageResponse:
                 for row in cur.fetchall()
             ]
 
-    decision = loop.run(request.question, session_history=history)
+    decision = _run_loop(loop, request.question, history, session_id)
 
     # Store the user message.
     with get_connection() as conn:
