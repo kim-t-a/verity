@@ -88,6 +88,19 @@ class SessionResponse(BaseModel):
     session_id: int
 
 
+class SessionSummary(BaseModel):
+    session_id: int
+    title: str
+    created_at: str
+    last_message_at: str | None
+    message_count: int
+
+
+#: How much of the first question becomes a chat title. Long enough to tell
+#: two questions apart, short enough for one line in a narrow list.
+TITLE_MAX_CHARS = 80
+
+
 class AskRequest(BaseModel):
     question: str
 
@@ -114,6 +127,66 @@ async def create_session(request: StartSession) -> SessionResponse:
             session_id = cur.fetchone()[0]
         conn.commit()
     return SessionResponse(session_id=session_id)
+
+
+@router.get("", response_model=dict, tags=["sessions"])
+async def list_sessions(
+    workspace_id: int = 1, limit: int = 50
+) -> dict[str, list[SessionSummary]]:
+    """The workspace's conversations, most recently used first.
+
+    A chat is a session that actually has messages: sessions are created
+    lazily on the first question, and an empty one has nothing to reopen.
+
+    The title is the first question the person asked, not a summary: a
+    generated title would be a second model call and a second chance to say
+    something the conversation does not. Activity is the newest message, so
+    resuming an old chat moves it to the top.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.id,
+                       s.created_at,
+                       COUNT(m.id) AS message_count,
+                       MAX(m.created_at) AS last_message_at,
+                       (SELECT content FROM messages
+                         WHERE session_id = s.id AND role = 'user'
+                         ORDER BY id LIMIT 1) AS first_question
+                FROM sessions s
+                JOIN messages m ON m.session_id = s.id
+                WHERE s.workspace_id = %s
+                GROUP BY s.id
+                ORDER BY MAX(m.created_at) DESC, s.id DESC
+                LIMIT %s
+                """,
+                (workspace_id, limit),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "sessions": [
+            SessionSummary(
+                session_id=row[0],
+                title=_chat_title(row[4]),
+                created_at=row[1].isoformat(),
+                last_message_at=row[3].isoformat() if row[3] else None,
+                message_count=row[2],
+            )
+            for row in rows
+        ]
+    }
+
+
+def _chat_title(question: str | None) -> str:
+    """One line for the chat list, cut at a word boundary."""
+    text = " ".join((question or "").split())
+    if not text:
+        return "Untitled chat"
+    if len(text) <= TITLE_MAX_CHARS:
+        return text
+    return text[:TITLE_MAX_CHARS].rsplit(" ", 1)[0].rstrip() + "…"
 
 
 @router.post("/{session_id}/messages", response_model=MessageResponse, tags=["sessions"])

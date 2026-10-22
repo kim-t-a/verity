@@ -79,6 +79,25 @@ def clean_api_data(db_conn: psycopg2.extensions.connection):
     yield
 
 
+def _insert_message(
+    conn: psycopg2.extensions.connection,
+    session_id: int,
+    role: str,
+    content: str,
+    kind: str = "answer",
+) -> int:
+    """Write one message directly, bypassing the model entirely."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO messages (session_id, role, content, kind) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (session_id, role, content, kind),
+        )
+        message_id = cur.fetchone()[0]
+    conn.commit()
+    return message_id
+
+
 class TestHealth:
     def test_health_returns_ok(self, client: TestClient) -> None:
         response = client.get("/api/health")
@@ -183,6 +202,92 @@ class TestSessions:
         data = response.json()
         assert "session_id" in data
         assert isinstance(data["session_id"], int)
+
+    def test_list_sessions_is_empty_without_messages(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        """A session is created lazily on the first question.
+
+        An empty session is not a conversation yet; listing it would put a
+        blank, unopenable row in the chat list.
+        """
+        client.post("/api/sessions", json={"workspace_id": 1})
+
+        response = client.get("/api/sessions?workspace_id=1")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+
+    def test_list_sessions_titles_a_chat_with_its_first_question(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        session_id = client.post(
+            "/api/sessions", json={"workspace_id": 1}
+        ).json()["session_id"]
+        _insert_message(db_conn, session_id, "user", "What is the maximum junction temperature?")
+        _insert_message(db_conn, session_id, "assistant", "94 C.")
+
+        response = client.get("/api/sessions?workspace_id=1")
+
+        (item,) = response.json()["sessions"]
+        assert item["session_id"] == session_id
+        assert item["title"] == "What is the maximum junction temperature?"
+        assert item["message_count"] == 2
+        assert item["last_message_at"] is not None
+
+    def test_a_long_first_question_is_cut_at_a_word(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        question = (
+            "Does the datasheet describe the thermal shutdown behaviour when "
+            "the board is operated continuously at the maximum rated junction "
+            "temperature without any additional heatsink?"
+        )
+        session_id = client.post(
+            "/api/sessions", json={"workspace_id": 1}
+        ).json()["session_id"]
+        _insert_message(db_conn, session_id, "user", question)
+
+        (item,) = client.get("/api/sessions?workspace_id=1").json()["sessions"]
+
+        assert item["title"].endswith("…")
+        assert len(item["title"]) <= 81
+        # Cut at a space, not mid-word: the last visible word is whole.
+        assert question.startswith(item["title"][:-1].rstrip())
+        assert not item["title"][:-1].endswith(" ")
+
+    def test_list_sessions_is_newest_activity_first(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        older = client.post("/api/sessions", json={"workspace_id": 1}).json()["session_id"]
+        newer = client.post("/api/sessions", json={"workspace_id": 1}).json()["session_id"]
+        _insert_message(db_conn, older, "user", "first chat")
+        _insert_message(db_conn, newer, "user", "second chat")
+        # Activity, not creation: the older session is the one just used.
+        _insert_message(db_conn, older, "user", "back to the first chat")
+
+        sessions = client.get("/api/sessions?workspace_id=1").json()["sessions"]
+
+        assert [item["session_id"] for item in sessions] == [older, newer]
+
+    def test_list_sessions_is_scoped_to_its_workspace(
+        self, client: TestClient, db_conn: psycopg2.extensions.connection
+    ) -> None:
+        mine = client.post("/api/sessions", json={"workspace_id": 1}).json()["session_id"]
+        _insert_message(db_conn, mine, "user", "mine")
+        with db_conn.cursor() as cur:
+            cur.execute("INSERT INTO workspaces (id, name) VALUES (2, 'other')")
+            cur.execute(
+                "INSERT INTO sessions (workspace_id, state, summary) "
+                "VALUES (2, '{}', NULL) RETURNING id"
+            )
+            other = cur.fetchone()[0]
+        db_conn.commit()
+        _insert_message(db_conn, other, "user", "theirs")
+
+        sessions = client.get("/api/sessions?workspace_id=1").json()["sessions"]
+
+        assert [item["session_id"] for item in sessions] == [mine]
 
     def test_ask_question_no_documents(
         self, client: TestClient, db_conn: psycopg2.extensions.connection

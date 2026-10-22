@@ -106,6 +106,20 @@ export interface HistoryResponse {
   messages: HistoryMessage[];
 }
 
+export interface SessionSummary {
+  session_id: number;
+  /** The first question asked in the chat, cut to one line. */
+  title: string;
+  created_at: string;
+  /** Newest message; chats are ordered by this, not by creation. */
+  last_message_at: string | null;
+  message_count: number;
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[];
+}
+
 export type Turn =
   | {
       key: string;

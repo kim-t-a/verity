@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { History } from "lucide-react";
 
 import { Composer } from "@/components/conversation/Composer";
+import { ConversationList } from "@/components/conversation/ConversationList";
 import { EvidencePanel } from "@/components/conversation/EvidencePanel";
 import { TracePanel } from "@/components/conversation/TracePanel";
 import { TurnView } from "@/components/conversation/TurnView";
 import { useConversation } from "@/hooks/useConversation";
+import { useSessions } from "@/hooks/useSessions";
 import type { Turn } from "@/types";
 
 type AssistantTurn = Extract<Turn, { role: "assistant" }>;
@@ -27,14 +30,18 @@ function assistantByKey(turns: Turn[], key: string | null): AssistantTurn | null
 
 export function ConversationScreen({ workspaceId = 1 }: { workspaceId?: number }) {
   const {
+    sessionId,
     turns,
     ask,
     asking,
     requestError,
     historyState,
     historyError,
+    openSession,
     reset,
   } = useConversation(workspaceId);
+  const chats = useSessions(workspaceId);
+  const [chatsOpen, setChatsOpen] = useState(false);
 
   const [pinnedKey, setPinnedKey] = useState<string | null>(null);
   const [selection, setSelection] = useState<{
@@ -65,7 +72,15 @@ export function ConversationScreen({ workspaceId = 1 }: { workspaceId?: number }
   function handleReset() {
     setPinnedKey(null);
     setSelection(null);
+    setChatsOpen(false);
     reset();
+  }
+
+  function handleSelectSession(id: number) {
+    setPinnedKey(null);
+    setSelection(null);
+    setChatsOpen(false);
+    void openSession(id);
   }
 
   function select(turnKey: string, numeral: number) {
@@ -82,18 +97,72 @@ export function ConversationScreen({ workspaceId = 1 }: { workspaceId?: number }
 
   return (
     <div className="flex h-full min-h-0">
+      <aside
+        className="hidden w-[248px] flex-none border-r border-rule bg-surface xl:block"
+        aria-label="Saved chats"
+      >
+        <ConversationList
+          sessions={chats.data}
+          loading={chats.isLoading}
+          failed={chats.isError}
+          activeSessionId={sessionId}
+          onSelect={handleSelectSession}
+          onNew={handleReset}
+          onRetry={() => void chats.refetch()}
+        />
+      </aside>
+
+      {chatsOpen && (
+        <div
+          className="fixed inset-0 z-40 xl:hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Saved chats"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 bg-[var(--overlay)]"
+            aria-label="Close chats"
+            onClick={() => setChatsOpen(false)}
+          />
+          <div className="absolute inset-y-0 left-0 w-[280px] border-r border-rule bg-surface shadow-xl">
+            <ConversationList
+              sessions={chats.data}
+              loading={chats.isLoading}
+              failed={chats.isError}
+              activeSessionId={sessionId}
+              onSelect={handleSelectSession}
+              onNew={handleReset}
+              onRetry={() => void chats.refetch()}
+              onClose={() => setChatsOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
       <section className="flex min-h-0 flex-1 flex-col">
         <header className="flex flex-none items-start justify-between gap-4 border-b border-rule px-5 py-3 sm:px-8">
           <div className="mx-auto flex w-full max-w-col items-start justify-between gap-4">
-            <div>
-              <h1 className="font-display text-[19px] leading-tight text-fg">
-                Conversation
-              </h1>
-              <p className="mt-0.5 text-[12px] text-muted">
-                {questions > 0
-                  ? `${questions} ${questions === 1 ? "question" : "questions"} in this session`
-                  : "Answers are grounded in the corpus, with the evidence shown."}
-              </p>
+            <div className="flex min-w-0 items-start gap-2">
+              <button
+                type="button"
+                onClick={() => setChatsOpen(true)}
+                aria-label="Open saved chats"
+                title="Saved chats"
+                className="-ml-1 mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-[4px] text-muted transition-colors duration-quick hover:bg-surface-2 hover:text-fg xl:hidden"
+              >
+                <History className="h-4 w-4" aria-hidden="true" />
+              </button>
+              <div className="min-w-0">
+                <h1 className="font-display text-[19px] leading-tight text-fg">
+                  Conversation
+                </h1>
+                <p className="mt-0.5 text-[12px] text-muted">
+                  {questions > 0
+                    ? `${questions} ${questions === 1 ? "question" : "questions"} in this session`
+                    : "Answers are grounded in the corpus, with the evidence shown."}
+                </p>
+              </div>
             </div>
             {turns.length > 0 && (
               <button

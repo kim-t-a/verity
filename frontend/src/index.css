@@ -30,6 +30,7 @@
     --ok-wash: #e4f2ea;
     --stop: #9a2323;
     --stop-wash: #fbeaea;
+    --overlay: rgba(20, 26, 33, 0.28);
     --shadow: 0 1px 2px rgba(20, 26, 33, 0.05),
       0 8px 24px -16px rgba(20, 26, 33, 0.28);
     --font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
@@ -55,6 +56,7 @@
       --ok-wash: #14261d;
       --stop: #e8796e;
       --stop-wash: #2b1917;
+      --overlay: rgba(0, 0, 0, 0.55);
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -16px rgba(0, 0, 0, 0.8);
     }
   }

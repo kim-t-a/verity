@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/api/client";
 import { sessionsApi } from "@/api/sessions";
+import { SESSIONS_KEY } from "@/hooks/useSessions";
 import type { AgentResponse, HistoryMessage, Turn } from "@/types";
 
 const storageKey = (workspaceId: number) => `verity.session.${workspaceId}`;
@@ -85,6 +87,7 @@ export type HistoryState = "loading" | "ready" | "error";
  * empty sessions in the database.
  */
 export function useConversation(workspaceId = 1) {
+  const queryClient = useQueryClient();
   const [sessionId, setSessionId] = useState<number | null>(() =>
     readStoredSession(workspaceId)
   );
@@ -93,6 +96,9 @@ export function useConversation(workspaceId = 1) {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
+  //: Which open is the current one. Clicking two chats quickly must end on
+  //: the second, not on whichever history response happened to arrive last.
+  const opening = useRef(0);
 
   // Hydrate once, from the id this tab remembered. Creating a session during
   // `ask` must not re-run this: it would replace the turn already on screen.
@@ -104,11 +110,12 @@ export function useConversation(workspaceId = 1) {
     }
 
     let cancelled = false;
+    const request = ++opening.current;
     setHistoryState("loading");
     sessionsApi
       .history(stored)
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || opening.current !== request) return;
         setSessionId(stored);
         // Do not overwrite a turn the person has already sent while history
         // was in flight.
@@ -118,7 +125,7 @@ export function useConversation(workspaceId = 1) {
         setHistoryState("ready");
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
+        if (cancelled || opening.current !== request) return;
         if (error instanceof ApiError && error.status === 404) {
           // The database was reset or the session deleted. Start clean rather
           // than leaving the screen pointed at a session that does not exist.
@@ -168,6 +175,11 @@ export function useConversation(workspaceId = 1) {
             at: new Date().toISOString(),
           },
         ]);
+        // The first question turns an empty session into a chat with a title,
+        // and every question moves it to the top of the list.
+        void queryClient.invalidateQueries({
+          queryKey: SESSIONS_KEY(workspaceId),
+        });
       } catch (error) {
         // The question stays on screen: it was asked, and hiding it would
         // misrepresent what the corpus has seen.
@@ -176,10 +188,50 @@ export function useConversation(workspaceId = 1) {
         setAsking(false);
       }
     },
-    [asking, sessionId, workspaceId]
+    [asking, queryClient, sessionId, workspaceId]
+  );
+
+  const openSession = useCallback(
+    async (id: number) => {
+      if (id === sessionId) return;
+
+      const request = ++opening.current;
+      setRequestError(null);
+      setHistoryError(null);
+      setHistoryState("loading");
+      setTurns([]);
+
+      try {
+        const data = await sessionsApi.history(id);
+        if (opening.current !== request) return;
+        storeSession(workspaceId, id);
+        setSessionId(id);
+        setTurns(data.messages.map(historyToTurn));
+        setHistoryState("ready");
+      } catch (error) {
+        if (opening.current !== request) return;
+        if (error instanceof ApiError && error.status === 404) {
+          // Deleted or reset since the list was drawn. Drop the row's
+          // selection rather than pointing the screen at nothing.
+          forgetSession(workspaceId);
+          setSessionId(null);
+          setTurns([]);
+          setHistoryState("ready");
+          void queryClient.invalidateQueries({
+            queryKey: SESSIONS_KEY(workspaceId),
+          });
+          return;
+        }
+        setHistoryError(describeError(error));
+        setHistoryState("error");
+      }
+    },
+    [queryClient, sessionId, workspaceId]
   );
 
   const reset = useCallback(() => {
+    // An open still in flight belongs to the chat being left behind.
+    opening.current += 1;
     forgetSession(workspaceId);
     setSessionId(null);
     setTurns([]);
@@ -196,6 +248,7 @@ export function useConversation(workspaceId = 1) {
     requestError,
     historyState,
     historyError,
+    openSession,
     reset,
   };
 }

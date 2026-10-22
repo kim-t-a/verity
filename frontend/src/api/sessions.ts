@@ -1,5 +1,5 @@
 import { api, jsonBody } from "@/api/client";
-import type { AgentResponse, HistoryResponse } from "@/types";
+import type { AgentResponse, HistoryResponse, SessionListResponse } from "@/types";
 
 export const sessionsApi = {
   create(workspaceId = 1): Promise<{ session_id: number }> {
@@ -18,5 +18,9 @@ export const sessionsApi = {
 
   history(sessionId: number): Promise<HistoryResponse> {
     return api(`/api/sessions/${sessionId}/messages`);
+  },
+
+  list(workspaceId = 1, limit = 50): Promise<SessionListResponse> {
+    return api(`/api/sessions?workspace_id=${workspaceId}&limit=${limit}`);
   },
 };
