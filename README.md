@@ -33,48 +33,149 @@ saying where it came from, and admitting when it is not there.
 
 ## How it works
 
-Two pipelines share one PostgreSQL database.
+Two pipelines share one PostgreSQL database. Every stage below names the file
+that owns it, so you can follow the code from this document.
+
+### The whole system
 
 ```
-INGESTION (once per document)
-
-  file ──► discover ──► read ──► chunk ──► embed ──► store
-           walker     readers  chunking  provider   repository
-
-QUESTION ANSWERING (every question)
-
-  question ──► keyword search ──┐
-            └► vector search ───┤
-                                ▼
-                       RRF fusion ──► top-k chunks
-                                ▼
-                  prompt with numbered chunks
-                                ▼
-                     LLM decides: answer / clarify / refuse
-                                ▼
-                  verify every cited chunk was shown
-                                ▼
-                        response + citations
+┌──────────────┐     /api (JSON)     ┌─────────────────────────────┐
+│ Browser      │ ──────────────────► │ FastAPI   verity/api/       │
+│ React + Vite │ ◄────────────────── │                             │
+└──────────────┘                     └───────┬─────────────┬───────┘
+                                             │             │
+                              ┌──────────────▼──┐   ┌──────▼──────────┐
+                              │ PostgreSQL 16   │   │ NVIDIA API      │
+                              │ pgvector        │   │ (backend only;  │
+                              │ tsvector        │   │ key never in    │
+                              └─────────────────┘   │ the browser)    │
+                                                    └─────────────────┘
 ```
 
+The browser calls only the backend. The backend calls the model provider.
+That is rule 7 in [`AGENTS.md`](AGENTS.md): the key stays on the server.
+
+### Pipeline 1 — ingestion (runs once per document)
+
 ```
-┌───────────────┐      /api       ┌──────────────────────┐
-│ React + Vite  │ ──────────────► │ FastAPI backend      │
-│ (frontend/)   │                 │  api/ agent/ llm/    │
-└───────────────┘                 │  worker/ db/         │
-                                  │  engine/ (pure)      │
-                                  └──────────┬───────────┘
-                                             │
-                                  ┌──────────▼───────────┐
-                                  │ PostgreSQL 16        │
-                                  │ pgvector + tsvector  │
-                                  └──────────────────────┘
+POST /api/workspaces/1/documents              api/documents.py
+  │  store the bytes, compute sha256
+  │  INSERT documents (status = pending)
+  ▼
+background task _ingest_background            api/documents.py
+  │
+  ├─ 1. sniff    engine/ingestion/filetypes.py
+  │       inspect the bytes → MediaType (never trust the filename)
+  │
+  ├─ 2. read     engine/ingestion/readers/
+  │       file → ReadResult { text, spans, status }
+  │       each span carries a location: "page 2", "row 14", ...
+  │
+  ├─ 3. chunk    engine/chunking.py
+  │       spans → Chunk { text, rel_path, location }
+  │
+  ├─ 4. embed    engine/nvidia_embedding_provider.py
+  │       each chunk's text → one vector
+  │
+  └─ 5. store    db/chunk_repository.py
+          chunks + vectors → PostgreSQL
+          documents.status = ready
 ```
+
+The same five stages run in `worker/ingest.py`, which ingests a whole
+directory. A failure at any stage marks **that document** `failed` with the
+reason and the loop continues, so one bad file never costs the corpus.
+
+A document becomes `ready` only after every chunk has been stored (I5).
+
+### Pipeline 2 — answering (runs on every question)
+
+```
+POST /api/sessions/1/messages                 api/sessions.py
+  │
+  ├─ load stored chunks and vectors            db/chunk_repository.py
+  │
+  ├─ build the retriever                       api/sessions.py
+  │     keyword  engine/retrieval/keyword.py   BM25
+  │     vector   engine/retrieval/vector.py    cosine
+  │     fuse     engine/retrieval/hybrid.py    RRF
+  ▼
+AgentLoop.run(question)                       agent/loop.py
+  │
+  │   repeat at most 5 times:
+  │     ┌──────────────────────────────────────────────────────┐
+  │     │ retrieve the top chunks                              │
+  │     │ show them to the model as numbered chunks [1]..[N]   │
+  │     │ the model returns one action:                        │
+  │     │   search        → refine the query, loop again       │
+  │     │   answer        → text + the chunk numbers it used   │
+  │     │   clarification → ask the user a question            │
+  │     │   refusal       → say the evidence is not there      │
+  │     └──────────────────────────────────────────────────────┘
+  ▼
+verify citations                              agent/loop.py
+  │  every cited number must be 1..N of the chunks shown
+  │  an invented number rejects the answer
+  ▼
+save the turn + citations                     api/sessions.py
+  ▼
+{"type": "answer" | "clarification" | "refusal", ...}
+```
+
+Two details that matter:
+
+- **The model never sees a chunk it cannot cite.** The prompt contains exactly
+  the retrieved chunks, numbered. There is no extra context (I2).
+- **Memory is not evidence.** History shapes the follow-up question, but every
+  turn retrieves again; an answer cannot cite a document that was not
+  retrieved this turn (I4).
+
+### A question, step by step
+
+1. `api/sessions.py` loads the stored chunks and builds a `HybridRetriever`.
+2. The keyword half ranks chunks by BM25; the vector half ranks them by cosine
+   similarity to the question's embedding.
+3. `HybridRetriever` fuses the two rankings with Reciprocal Rank Fusion (RRF),
+   so a chunk found by both methods outranks one found by only one.
+4. `AgentLoop` shows the top chunks to the LLM. The LLM answers with chunk
+   numbers, searches again, clarifies, or refuses.
+5. The loop verifies every number against the chunks shown **in that
+   iteration**. If verification fails, the turn is a refusal, not an answer.
+6. `api/sessions.py` stores the user message, the assistant message, and one
+   `citations` row per verified citation.
+7. The frontend renders the answer, the evidence panel, and the trace.
+
+### What lives in the database
+
+| Table | Holds |
+|---|---|
+| `workspaces` | The single shared workspace. |
+| `documents` | One row per uploaded file: status, hash, size, failure reason. |
+| `document_versions` | The content-hash history for a document. |
+| `chunks` | Text + vector + generated `tsvector`; the retrieval unit. |
+| `sessions` | A conversation. |
+| `messages` | User and assistant turns, with `kind` (answer/clarify/refuse). |
+| `citations` | Which chunk and document supported which assistant message. |
+| `memories` | Derived context (spec); not populated yet, and never evidence. |
+| `jobs` | Queue table for a future long-running worker; not populated yet. |
+
+### Why the engine is separate
 
 The `engine/` package is pure Python standard library. PDF, DOCX, and XLSX
 parsing are hand-written against `zipfile` and `xml.etree`, so the engine can
 be imported and tested with nothing installed. Only the product layer
 (`api/`, `worker/`, `db/`, `llm/`) has third-party dependencies.
+
+### Reading order
+
+If you are learning the system, read in this order:
+
+1. `engine/chunking.py` — the unit everything else is built on.
+2. `engine/ingestion/readers/__init__.py` — a file becomes text and locations.
+3. `worker/ingest.py` — the five stages over a whole directory.
+4. `engine/retrieval/hybrid.py` — how two rankings become one.
+5. `agent/loop.py` — how a question becomes an answer with verified citations.
+6. `api/sessions.py` — the HTTP surface around the loop.
 
 ## Tech stack
 
@@ -285,7 +386,7 @@ Interactive documentation is served at `/docs` while the API runs.
 │   └── tests/             the only test tree
 ├── frontend/              React + Vite application
 ├── docs/                  design specs, plans, walkthrough
-├── legacy/                original challenge material (reference only)
+├── legacy/                original challenge material (local only, ignored)
 ├── AGENTS.md              durable rules for human and AI contributors
 └── docker-compose.yml
 ```
@@ -337,7 +438,8 @@ Not yet built:
 - Production frontend serving (the Compose frontend runs the Vite dev server)
 
 `legacy/` holds the original challenge material the engine was ported from. It
-is reference only and is not part of the product.
+is local reference only: **git-ignored and never published**. The real-corpus
+tests skip when it is absent, so a fresh clone still runs green.
 
 ## Contributing
 
