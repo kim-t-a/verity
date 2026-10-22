@@ -33,7 +33,10 @@ the documents win:
 `legacy/` holds the AMD AI League MC3 challenge material (`CONTRACT.md`, the
 brief, the sample corpus, the starter Dockerfile). It is **not authoritative**.
 It is kept because the engine was ported from it and the reasoning behind some
-of the parsing code is only written down there.
+of the parsing code is only written down there. It is **git-ignored and must
+never be committed or published**; the real-corpus tests skip when it is
+absent. Heavy starter assets (`starter/models/`) are ignored for the same
+reason. `.superpowers/` is agent scratch space and is ignored too.
 
 ## The invariants
 
