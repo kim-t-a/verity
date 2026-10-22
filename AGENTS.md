@@ -147,6 +147,11 @@ config; run pytest from `backend/`.
   `docker ps` shows only `8000/tcp`, the browser is served by the host process
   and `docker compose logs` stays empty. Stop the host processes, then
   `docker compose up -d --force-recreate backend frontend`.
+- **Running `backend/tests/test_api.py` deletes the development database's
+  contents.** Its autouse `clean_api_data` fixture truncates documents,
+  sessions and messages through the same Postgres the Compose stack uses —
+  verified 2026-10-22, when a test run emptied the corpus mid-verification.
+  Re-upload the documents (or accept an empty corpus) after a full pytest run.
 
 ## Conventions
 
